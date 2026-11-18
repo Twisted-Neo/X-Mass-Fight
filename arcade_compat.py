@@ -1,4 +1,4 @@
-"""Arcade 2.x / 3.x compatibility wrappers for drawing primitives and text."""
+"""Arcade compatibility wrappers for drawing primitives and text."""
 
 import arcade
 
@@ -20,7 +20,6 @@ def draw_rectangle_outline(cx, cy, w, h, color, border_width=1):
 
 
 def draw_sprite(sprite):
-    """Arcade 3.x removed Sprite.draw()."""
     if hasattr(arcade, "draw_sprite"):
         arcade.draw_sprite(sprite)
     else:
@@ -29,7 +28,6 @@ def draw_sprite(sprite):
 
 def draw_text(text, x, y, color, size, anchor_x="left", anchor_y="baseline",
               bold=False):
-    """Prefer arcade.Text; fall back to arcade.draw_text for older builds."""
     if hasattr(arcade, "Text"):
         try:
             arcade.Text(
@@ -48,3 +46,16 @@ def draw_text(text, x, y, color, size, anchor_x="left", anchor_y="baseline",
 
 def draw_line(x1, y1, x2, y2, color, width=1):
     arcade.draw_line(x1, y1, x2, y2, color, width)
+
+
+def draw_texture_rectangle(cx, cy, w, h, texture):
+    if hasattr(arcade, "draw_texture_rect"):
+        try:
+            arcade.draw_texture_rect(texture, arcade.XYWH(cx, cy, w, h))
+            return
+        except Exception:
+            pass
+    if hasattr(arcade, "draw_texture_rectangle"):
+        arcade.draw_texture_rectangle(cx, cy, w, h, texture)
+    else:
+        texture.draw_scaled(cx, cy, w / texture.width)
