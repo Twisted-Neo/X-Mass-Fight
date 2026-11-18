@@ -22,7 +22,6 @@ class Fighter(arcade.Sprite):
 
     def __init__(self, x, y, player_name, tint_color, facing=1):
         super().__init__()
-        super().__init__()
 
         self.player_name = player_name
         self.center_x = x
@@ -67,14 +66,20 @@ class Fighter(arcade.Sprite):
         self.attack_hitbox = None
         self.attack_has_hit = False
 
-        # Animations (lru_cache means both fighters share textures)
-        self.animations = load_all_animations()
+        # Load right-facing and create left-facing (flipped) animation sets
+        raw_animations = load_all_animations()
+        self.animations_right = raw_animations
+        self.animations_left = {
+            name: tuple(tex.flip_left_right() for tex in frames)
+            for name, frames in raw_animations.items()
+        }
+        self._last_anim_set = None
 
         self.state = "IDLE"
         self.cur_texture_index = 0
         self.animation_timer = 0.0
         self.was_airborne = False
-        self.texture = self.animations["IDLE"][0]
+        self.texture = self.animations_right["IDLE"][0]
         self._apply_fixed_hit_box()
 
     # ------------------------------------------------------------------
@@ -243,9 +248,11 @@ class Fighter(arcade.Sprite):
     # ------------------------------------------------------------------
 
     def update_animation(self, delta_time):
+        anim_set = (
+            self.animations_right if self.facing_right else self.animations_left
+        )
+
         # --- State selection ---
-        # Ordering matters: movement / crouch / air all interrupt the
-        # landing recovery animation so input feels responsive.
         if self.hitstun_timer > 0:
             new_state = "HIT"
         elif not self.is_grounded:
@@ -256,35 +263,31 @@ class Fighter(arcade.Sprite):
             new_state = "WALKING"
         elif (self.state == "LANDING"
               and self.cur_texture_index
-                  < len(self.animations["LANDING"]) - 1):
+                  < len(anim_set["LANDING"]) - 1):
             new_state = "LANDING"
-        elif self.just_landed and "LANDING" in self.animations:
+        elif self.just_landed and "LANDING" in anim_set:
             new_state = "LANDING"
         else:
             new_state = "IDLE"
 
         self.was_airborne = not self.is_grounded
 
-        # --- State transition ---
-        if new_state != self.state:
+        # --- State transition or direction change ---
+        if new_state != self.state or anim_set is not self._last_anim_set:
             self.state = new_state
             self.cur_texture_index = 0
             self.animation_timer = 0.0
-            # FIX: show frame 0 immediately, don't linger on the old texture.
-            frames = self.animations.get(self.state) or self.animations["IDLE"]
+            frames = anim_set.get(self.state) or anim_set["IDLE"]
             self.texture = frames[0]
+            self._last_anim_set = anim_set
         else:
-            frames = self.animations.get(self.state) or self.animations["IDLE"]
+            frames = anim_set.get(self.state) or anim_set["IDLE"]
 
-        # --- Facing ---
-        self.scale_x = self.base_scale if self.facing_right else -self.base_scale
-
-        # --- Frame advancement (fixed step count, no jitter) ---
-        from config import PHYSICS_STEP
+        # --- Frame advancement ---
         speed = ANIM_SPEED.get(self.state, 0.08)
         steps_per_frame = max(1, round(speed / PHYSICS_STEP))
 
-        self.animation_timer += 1  # we get called once per physics step
+        self.animation_timer += 1
         while self.animation_timer >= steps_per_frame:
             self.animation_timer -= steps_per_frame
 
@@ -292,10 +295,9 @@ class Fighter(arcade.Sprite):
                 if self.cur_texture_index < len(frames) - 1:
                     self.cur_texture_index += 1
                 else:
-                    # Landing recovery done — fall through to IDLE next frame.
                     self.state = "IDLE"
                     self.cur_texture_index = 0
-                    frames = self.animations["IDLE"]
+                    frames = anim_set["IDLE"]
             else:
                 self.cur_texture_index = (
                     self.cur_texture_index + 1
