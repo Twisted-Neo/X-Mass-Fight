@@ -27,7 +27,7 @@ class Fighter(arcade.Sprite):
         self.player_name = player_name
         self.center_x = x
         self.center_y = y
-        self.base_scale = 0.8
+        self.base_scale = 0.5
         self.scale = self.base_scale
         self.base_color = tint_color
         self.color = tint_color
@@ -83,7 +83,12 @@ class Fighter(arcade.Sprite):
 
     def _apply_fixed_hit_box(self):
         hw, hh = self.BODY_W / 2, self.BODY_H / 2
-        self.hit_box = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+        points = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+
+        self.texture = arcade.Texture(
+            self.texture.image,
+            hit_box_points=points
+        )
 
     @property
     def width(self):

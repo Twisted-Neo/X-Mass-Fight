@@ -11,6 +11,5 @@ def main():
     window.show_view(XMassFightView())
     arcade.run()
 
-
 if __name__ == "__main__":
     main()
