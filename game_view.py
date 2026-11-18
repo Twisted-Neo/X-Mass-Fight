@@ -492,3 +492,4 @@ class XMassFightView(arcade.View):
             self.p2.crouching = False
         elif key in (arcade.key.UP, arcade.key.RSHIFT):
             self.p2.jump_pressed = False
+            
