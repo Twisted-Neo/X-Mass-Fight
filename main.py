@@ -1,15 +1,4 @@
 import arcade
-<<<<<<< HEAD
-
-WINDOW_WIDTH = 1280
-WINDOW_HEIGHT = 720
-WINDOW_TITLE = "Starting Template"
-
-class GameView(arcade.View):
-
-    def __init__(self):
-        super().__init__()
-=======
 import os
 from PIL import Image
 
@@ -354,4 +343,3 @@ def main():
 
 if __name__ == "__main__":
     main()
->>>>>>> 26fcc55a4243914d03a0758a0b31d16342f285fe
