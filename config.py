@@ -11,8 +11,23 @@ PHYSICS_STEP = 1.0 / TARGET_FPS
 MAX_FRAME_TIME = 0.25
 MAX_STEPS_PER_FRAME = 5
 
-# --- Fighter Dimensions & Movement ---
+# --- Active Smash Camera & World Bounds ---
+CAMERA_MIN_ZOOM = 0.74
+CAMERA_MAX_ZOOM = 1.38
+CAMERA_LERP_SPEED = 7.5
+CAMERA_PADDING_X = 560.0
+CAMERA_PADDING_Y = 420.0
+CAMERA_Y_BIAS = 45.0
+WORLD_MIN_X = -460.0
+WORLD_MAX_X = WINDOW_WIDTH + 460.0
+WORLD_MIN_Y = -220.0
+WORLD_MAX_Y = WINDOW_HEIGHT + 460.0
+
+# --- Standardized Character Hurtbox & Movement (Identical Across All Characters) ---
 TARGET_FIGHTER_HEIGHT = 84.0
+FIGHTER_HURTBOX_W = 54.0
+FIGHTER_HURTBOX_H = 84.0
+
 GRAVITY = 0.72
 MAX_FALL_SPEED = 16.0
 FAST_FALL_SPEED = 24.5
@@ -29,27 +44,45 @@ JUMP_BUFFER_FRAMES = 7
 COYOTE_TIME_FRAMES = 7
 DROP_THROUGH_FRAMES = 10
 
-# --- Combat, Side Combo, Charge & Shield ---
+# --- Ledge Grab & Off-Stage Recovery ---
+LEDGE_GRAB_OUTER_X = 46.0
+LEDGE_GRAB_INNER_X = 26.0
+LEDGE_GRAB_TOP_PAD = 24.0
+LEDGE_GRAB_BOTTOM_PAD = 54.0
+LEDGE_INVULN_FRAMES = 45
+LEDGE_MAX_HANG_FRAMES = 150
+LEDGE_REGRAB_COOLDOWN = 28
+
+# --- Base Combat, Side Combo, Air Dash Attack, Charge & Shield ---
 BASE_DAMAGE = 7.0
 BASE_KNOCKBACK_X = 6.8
 BASE_KNOCKBACK_Y = 6.2
 KNOCKBACK_DAMAGE_SCALE = 1.0 / 38.0
 HITSTUN_BASE = 11
 HITSTOP_FRAMES = 5
+IMPACT_FREEZE_FRAMES = 15
 HIT_FLASH_FRAMES = 6
 INVINCIBLE_HIT_FRAMES = 16
 RESPAWN_INVULN_FRAMES = 120
+DI_INFLUENCE_STRENGTH = 0.14
 
-# Enlarged attack reach & hitboxes
+# Default weapon timing & baseline hitbox dimensions (customized per character in characters.py)
 ATTACK_DURATION = 14
 ATTACK_SIDE_1_DURATION = 10
 ATTACK_SIDE_2_DURATION = 12
+ATTACK_DASH_DURATION = 18
 ATTACK_ACTIVE_START = 2
 ATTACK_ACTIVE_END = 9
 ATTACK_COOLDOWN = 5
-ATTACK_REACH = 96
-ATTACK_HITBOX_W = 138
-ATTACK_HITBOX_H = 104
+ATTACK_REACH = 96.0
+ATTACK_HITBOX_W = 138.0
+ATTACK_HITBOX_H = 104.0
+
+# Mid-Air Dash Attack (Recovery + 2-Slash Flipped Arc)
+ATTACK_DASH_SPEED_X = 13.8
+ATTACK_DASH_SPEED_Y = 8.4
+ATTACK_DASH_SLASH1_DMG_MULT = 0.72
+ATTACK_DASH_SLASH2_DMG_MULT = 1.40
 
 # Side attack 2-hit combo tuning
 SIDE_COMBO_WINDOW_FRAMES = 24
@@ -73,19 +106,25 @@ SHIELD_STUN_FRAMES = 110
 
 STARTING_STOCKS = 3
 BLAST_ZONE = 300
+BOTTOM_BLAST_ZONE = 155
+SIDE_BLAST_ZONE = 650
+TOP_BLAST_ZONE = 650
+EXTREME_LAUNCH_KO_SPEED = 34.0
+KO_RESPAWN_DELAY_FRAMES = 65
+GAME_SET_DELAY_FRAMES = 75
 
-# --- Assets & Exact Sheet Grids ---
+# --- Assets & Exact Sheet Grids (Suffixes appended to "<CharacterId>-<Suffix>.png") ---
 ASSET_PATH = Path(__file__).resolve().parent / "assets"
 
 BODY_ANIM_SPECS = {
-    "IDLE":    ("Xteve-Idle.png",   6, 4, 0.10),
-    "WALKING": ("Xteve-Walk.png",   6, 4, 0.033),
-    "JUMPING": ("Xteve-Jump.png",   1, 1, 0.10),
-    "FALLING": ("Xteve-Fall.png",   1, 1, 0.10),
-    "LANDING": ("Xteve-Land.png",   6, 4, 0.033),
-    "LAUNCH":  ("Xteve-Launch.png", 4, 6, 0.032),
-    "SIT":     ("Xteve-Sit.png",    1, 1, 0.15),
-    "HIT":     ("Xteve-Hit.png",    1, 1, 0.08),
+    "IDLE":    ("Idle",   6, 4, 0.10),
+    "WALKING": ("Walk",   6, 4, 0.033),
+    "JUMPING": ("Jump",   1, 1, 0.10),
+    "FALLING": ("Fall",   1, 1, 0.10),
+    "LANDING": ("Land",   6, 4, 0.033),
+    "LAUNCH":  ("Launch", 4, 6, 0.032),
+    "SIT":     ("Sit",    1, 1, 0.15),
+    "HIT":     ("Hit",    1, 1, 0.08),
 }
 
 # --- Palette (RGBA) ---
@@ -96,8 +135,8 @@ COLOR_AURORA_A           = (50, 230, 150)
 COLOR_AURORA_B           = (130, 100, 245)
 COLOR_PLATFORM_MAIN      = (180, 35, 55, 255)
 COLOR_PLATFORM_MAIN_EDGE = (255, 110, 130, 255)
-COLOR_PLATFORM_SOFT      = (50, 150, 110, 255)
-COLOR_PLATFORM_SOFT_EDGE = (120, 235, 190, 255)
+COLOR_PLATFORM_SOFT      = (45, 135, 105, 255)
+COLOR_PLATFORM_SOFT_EDGE = (130, 240, 195, 255)
 COLOR_HUD_BG             = (15, 18, 30, 230)
 COLOR_HUD_BORDER         = (70, 85, 110, 255)
 COLOR_HUD_P1             = (235, 65, 75, 255)
@@ -109,6 +148,7 @@ COLOR_TEXT_DIM           = (160, 170, 195, 255)
 COLOR_GOLD               = (255, 215, 75, 255)
 COLOR_HIT_FLASH          = (255, 255, 255, 255)
 COLOR_HITBOX_DEBUG       = (255, 240, 0, 255)
+COLOR_HURTBOX_DEBUG      = (70, 235, 255, 255)
 
 COLOR_HIT_SPARKS = (
     (255, 245, 160, 255),
@@ -122,4 +162,4 @@ COLOR_KO_SPARKS = (
 )
 
 HEART_CHAR = "\u2665"
-DEBUG_HITBOXES = True
+DEBUG_HITBOXES = False
