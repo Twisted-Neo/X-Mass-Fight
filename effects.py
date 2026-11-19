@@ -1,4 +1,4 @@
-"""GPU-batched SpriteList particles, Blast-Zone KO light beams, shockwave rings, and cached floating callouts."""
+"""GPU-batched pooled SpriteList particles, Blast-Zone KO light beams, shockwave rings, and cached floating callouts."""
 
 import math
 import random
@@ -138,35 +138,45 @@ class EffectSystem:
     def __init__(self):
         self.circle_tex = get_soft_circle_texture()
         self.particle_sprites = arcade.SpriteList()
-        self.particle_data = []  # [vx, vy, gravity, drag, life, max_life]
+        self.free_particles: list[arcade.Sprite] = []
+        self.particle_data = []  # [sprite, vx, vy, gravity, drag, life, max_life]
         self.shockwaves: list[_Shockwave] = []
         self.blast_beams: list[_BlastBeam] = []
         self.callouts: list[_FloatingCallout] = []
 
     def _spawn(self, x: float, y: float, vx: float, vy: float, radius: float, color: tuple, life: int, gravity: float = 0.0, drag: float = 0.98):
-        sp = arcade.Sprite(self.circle_tex, scale=max(0.06, radius / 14.0))
+        scale = max(0.06, radius / 14.0)
+        if self.free_particles:
+            sp = self.free_particles.pop()
+            sp.visible = True
+            sp.scale = (scale, scale)
+        else:
+            sp = arcade.Sprite(self.circle_tex, scale=scale)
+            self.particle_sprites.append(sp)
+
         sp.center_x = x
         sp.center_y = y
         sp.color = color[:3]
         sp.alpha = color[3] if len(color) > 3 else 255
-        self.particle_sprites.append(sp)
-        self.particle_data.append([vx, vy, gravity, drag, life, life])
+        self.particle_data.append([sp, vx, vy, gravity, drag, life, life])
 
     def update(self):
         i = len(self.particle_data) - 1
         while i >= 0:
             data = self.particle_data[i]
-            sp = self.particle_sprites[i]
-            sp.center_x += data[0]
-            sp.center_y += data[1]
-            data[1] -= data[2]
-            data[0] *= data[3]
-            data[4] -= 1
-            if data[4] <= 0:
-                sp.remove_from_sprite_lists()
-                self.particle_data.pop(i)
+            sp = data[0]
+            sp.center_x += data[1]
+            sp.center_y += data[2]
+            data[2] -= data[3]
+            data[1] *= data[4]
+            data[5] -= 1
+            if data[5] <= 0:
+                sp.visible = False
+                self.free_particles.append(sp)
+                self.particle_data[i] = self.particle_data[-1]
+                self.particle_data.pop()
             else:
-                sp.alpha = int(255 * (data[4] / data[5]))
+                sp.alpha = int(255 * (data[5] / data[6]))
             i -= 1
 
         self.shockwaves = [s for s in self.shockwaves if s.update()]

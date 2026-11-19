@@ -140,9 +140,19 @@ class _PlayerCard:
             self.lbl_name.text = f"{self.base_label}  [{char_display}]" if char_display else self.base_label
 
         dmg = int(player.damage)
-        if dmg > self._cached_dmg and self._cached_dmg >= 0:
-            self._jiggle_timer = 12
-        self._cached_dmg = dmg
+        if dmg != self._cached_dmg:
+            if dmg > self._cached_dmg and self._cached_dmg >= 0:
+                self._jiggle_timer = 12
+            self._cached_dmg = dmg
+            self.lbl_damage.text = f"{dmg}%"
+            if dmg < 50:
+                self.lbl_damage.color = (140, 235, 140, 255)
+            elif dmg < 100:
+                self.lbl_damage.color = (240, 220, 100, 255)
+            elif dmg < 150:
+                self.lbl_damage.color = (250, 160, 80, 255)
+            else:
+                self.lbl_damage.color = (255, 75, 75, 255)
 
         jx, jy = 0.0, 0.0
         if self._jiggle_timer > 0:
@@ -156,16 +166,6 @@ class _PlayerCard:
         arcade.draw_rect_filled(arcade.XYWH(cx, cy, self.pw, self.ph), COLOR_HUD_BG)
         border_col = (255, 255, 255, 255) if self._jiggle_timer > 7 else self.accent
         arcade.draw_rect_outline(arcade.XYWH(cx, cy, self.pw, self.ph), border_col, border_width=4)
-
-        self.lbl_damage.text = f"{dmg}%"
-        if dmg < 50:
-            self.lbl_damage.color = (140, 235, 140, 255)
-        elif dmg < 100:
-            self.lbl_damage.color = (240, 220, 100, 255)
-        elif dmg < 150:
-            self.lbl_damage.color = (250, 160, 80, 255)
-        else:
-            self.lbl_damage.color = (255, 75, 75, 255)
 
         if player.stocks != self._cached_stocks:
             self._cached_stocks = player.stocks

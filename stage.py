@@ -28,7 +28,7 @@ class Platform:
         self.height = height
         self.pass_through = pass_through
 
-        # Precompute icicle & snow-drift geometry so drawing is fast and deterministic
+        # Precompute icicle geometry so building static shapes is fast and deterministic
         rng = random.Random(int(x * 13 + y * 7 + width))
         self.icicles = []
         ix = self.left + 22.0
@@ -52,11 +52,21 @@ class Platform:
     def right(self) -> float:
         return self.center_x + self.width * 0.5
 
-    def draw(self, time: float = 0.0):
+    def build_static_shapes(self, shapes: arcade.shape_list.ShapeElementList):
+        """Appends all non-animated platform geometry into a single GPU-batched ShapeElementList."""
         cx, cy, w, h = self.center_x, self.center_y, self.width, self.height
 
         if not self.pass_through:
             # Deep tapered winter-fortress under-hull for off-stage recovery space & visual depth
+            hull_outline = (
+                (self.left + 10, self.bottom),
+                (self.right - 10, self.bottom),
+                (self.right - 113, self.bottom - 107),
+                (cx + 197, self.bottom - 177),
+                (cx, self.bottom - 207),
+                (cx - 197, self.bottom - 177),
+                (self.left + 113, self.bottom - 107),
+            )
             hull = (
                 (self.left + 12, self.bottom),
                 (self.right - 12, self.bottom),
@@ -66,9 +76,6 @@ class Platform:
                 (cx - 195, self.bottom - 175),
                 (self.left + 115, self.bottom - 105),
             )
-            arcade.draw_polygon_filled(hull, (20, 24, 44, 248))
-
-            # Mid glacial facet layer
             mid_hull = (
                 (self.left + 64, self.bottom - 4),
                 (self.right - 64, self.bottom - 4),
@@ -78,9 +85,6 @@ class Platform:
                 (cx - 150, self.bottom - 152),
                 (self.left + 155, self.bottom - 92),
             )
-            arcade.draw_polygon_filled(mid_hull, (30, 38, 66, 240))
-
-            # Inner crystalline core facet
             core_hull = (
                 (cx - 210, self.bottom - 12),
                 (cx + 210, self.bottom - 12),
@@ -88,12 +92,15 @@ class Platform:
                 (cx, self.bottom - 142),
                 (cx - 105, self.bottom - 118),
             )
-            arcade.draw_polygon_filled(core_hull, (44, 58, 96, 225))
-            arcade.draw_polygon_outline(hull, (75, 98, 145, 190), line_width=2)
+            shapes.append(arcade.shape_list.create_polygon(hull_outline, (75, 98, 145, 190)))
+            shapes.append(arcade.shape_list.create_polygon(hull, (20, 24, 44, 248)))
+            shapes.append(arcade.shape_list.create_polygon(mid_hull, (30, 38, 66, 240)))
+            shapes.append(arcade.shape_list.create_polygon(core_hull, (44, 58, 96, 225)))
 
-            # Main crimson festive deck
-            arcade.draw_rect_filled(arcade.XYWH(cx, cy, w, h), COLOR_PLATFORM_MAIN)
-            arcade.draw_rect_filled(arcade.XYWH(cx, cy - h * 0.25, w - 8, h * 0.42), (135, 22, 38, 255))
+            # Main crimson festive deck + border
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, cy, w + 4, h + 4, COLOR_PLATFORM_MAIN_EDGE))
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, cy, w, h, COLOR_PLATFORM_MAIN))
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, cy - h * 0.25, w - 8, h * 0.42, (135, 22, 38, 255)))
 
             # Candy-cane diagonal accent blocks along the trim
             stripe_step = 44.0
@@ -101,60 +108,59 @@ class Platform:
             idx = 0
             while sx < self.right - 26.0:
                 if idx % 2 == 0:
-                    arcade.draw_rect_filled(arcade.XYWH(sx, cy, 16, h - 10), (245, 245, 250, 175))
+                    shapes.append(arcade.shape_list.create_rectangle_filled(sx, cy, 16, h - 10, (245, 245, 250, 175)))
                 sx += stripe_step
                 idx += 1
 
             # Thick snow blanket along the top surface
-            arcade.draw_rect_filled(arcade.XYWH(cx, self.top - 4, w + 4, 9), (240, 247, 255, 255))
-            arcade.draw_rect_filled(arcade.XYWH(cx, self.top - 9, w - 10, 4), (185, 215, 245, 220))
-            arcade.draw_rect_outline(arcade.XYWH(cx, cy, w, h), COLOR_PLATFORM_MAIN_EDGE, border_width=2)
-
-            # Grabbable Ledge Grip Brackets on left & right corners
-            grip_pulse = int(190 + 65 * math.sin(time * 5.0))
-            grip_col = (COLOR_GOLD[0], COLOR_GOLD[1], COLOR_GOLD[2], grip_pulse)
-            for edge_x, sign in ((self.left, 1), (self.right, -1)):
-                arcade.draw_rect_filled(arcade.XYWH(edge_x + sign * 8, self.top - 3, 18, 7), grip_col)
-                arcade.draw_rect_filled(arcade.XYWH(edge_x + sign * 2, self.top - 12, 6, 22), grip_col)
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, self.top - 4, w + 4, 9, (240, 247, 255, 255)))
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, self.top - 9, w - 10, 4, (185, 215, 245, 220)))
 
             # Hanging icicles
             for ix, length, half_base in self.icicles:
-                arcade.draw_triangle_filled(
-                    ix - half_base, self.bottom,
-                    ix + half_base, self.bottom,
-                    ix, self.bottom - length,
-                    (195, 230, 255, 200),
+                tri = (
+                    (ix - half_base, self.bottom),
+                    (ix + half_base, self.bottom),
+                    (ix, self.bottom - length),
                 )
-
-            # Twinkling holiday string lights along the lower lip
-            bulb_x = self.left + 28.0
-            b_idx = 0
-            while bulb_x < self.right - 28.0:
-                col = _BULB_COLORS[b_idx % len(_BULB_COLORS)]
-                pulse = 0.65 + 0.35 * math.sin(time * 4.2 + b_idx * 0.9)
-                by = self.bottom - 5.0 - abs(math.sin(b_idx * 0.65)) * 5.0
-                arcade.draw_circle_filled(bulb_x, by, 9.0, (*col, int(55 * pulse)))
-                arcade.draw_circle_filled(bulb_x, by, 4.2, (*col, int(180 + 75 * pulse)))
-                bulb_x += 46.0
-                b_idx += 1
+                shapes.append(arcade.shape_list.create_polygon(tri, (195, 230, 255, 200)))
         else:
             # Soft pass-through floating holiday platform
-            arcade.draw_rect_filled(arcade.XYWH(cx, cy - 5, w + 6, h + 4), (0, 0, 0, 115))
-            arcade.draw_rect_filled(arcade.XYWH(cx, cy, w, h), COLOR_PLATFORM_SOFT)
-            arcade.draw_rect_filled(arcade.XYWH(cx, self.top - 3, w + 4, 6), (235, 246, 255, 245))
-            arcade.draw_rect_outline(arcade.XYWH(cx, cy, w, h), COLOR_PLATFORM_SOFT_EDGE, border_width=2)
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, cy - 5, w + 6, h + 4, (0, 0, 0, 115)))
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, cy, w + 4, h + 4, COLOR_PLATFORM_SOFT_EDGE))
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, cy, w, h, COLOR_PLATFORM_SOFT))
+            shapes.append(arcade.shape_list.create_rectangle_filled(cx, self.top - 3, w + 4, 6, (235, 246, 255, 245)))
 
             for ix, length, half_base in self.icicles:
-                arcade.draw_triangle_filled(
-                    ix - half_base * 0.8, self.bottom,
-                    ix + half_base * 0.8, self.bottom,
-                    ix, self.bottom - length * 0.75,
-                    (185, 235, 235, 175),
+                tri = (
+                    (ix - half_base * 0.8, self.bottom),
+                    (ix + half_base * 0.8, self.bottom),
+                    (ix, self.bottom - length * 0.75),
                 )
+                shapes.append(arcade.shape_list.create_polygon(tri, (185, 235, 235, 175)))
+
+    def draw_dynamic(self, time: float = 0.0):
+        """Draws only the animated ledge grip markers."""
+        if self.pass_through:
+            return
+        grip_pulse = int(190 + 65 * math.sin(time * 5.0))
+        grip_col = (COLOR_GOLD[0], COLOR_GOLD[1], COLOR_GOLD[2], grip_pulse)
+        for edge_x, sign in ((self.left, 1), (self.right, -1)):
+            arcade.draw_rect_filled(arcade.XYWH(edge_x + sign * 8, self.top - 3, 18, 7), grip_col)
+            arcade.draw_rect_filled(arcade.XYWH(edge_x + sign * 2, self.top - 12, 6, 22), grip_col)
+
+
+def _build_ridge_shapes(peaks: tuple[tuple[float, float], ...], color: tuple) -> arcade.shape_list.ShapeElementList:
+    """Decomposes a mountain skyline into strictly convex vertical trapezoids for ShapeElementList."""
+    shapes = arcade.shape_list.ShapeElementList()
+    for (x1, y1), (x2, y2) in zip(peaks, peaks[1:]):
+        quad = ((x1, 0), (x1, y1), (x2, y2), (x2, 0))
+        shapes.append(arcade.shape_list.create_polygon(quad, color))
+    return shapes
 
 
 class HolidayStage:
-    """Combines pre-baked sky, parallax mountain silhouettes, batched stars & snow, and stage platforms."""
+    """Combines pre-baked sky, batched parallax mountains, batched stars/snow/lights, and static stage geometry."""
 
     def __init__(self, include_platforms: bool = True, snow_count: int = 110):
         self.sky_tex = get_sky_backdrop_texture()
@@ -189,6 +195,22 @@ class HolidayStage:
                 random.uniform(1.5, 3.5),
             ])
 
+        # Batched parallax mountain ranges (2 GPU draw calls)
+        far_peaks = (
+            (-120, 230), (180, 390), (460, 250), (760, 450),
+            (1080, 270), (1420, 430), (1740, 260), (2040, 370),
+        )
+        self.far_mountain_shapes = _build_ridge_shapes(far_peaks, (18, 22, 46, 220))
+        for peak_x, peak_y in ((180, 390), (760, 450), (1420, 430)):
+            cap = ((peak_x, peak_y), (peak_x - 68, peak_y - 46), (peak_x + 68, peak_y - 46))
+            self.far_mountain_shapes.append(arcade.shape_list.create_polygon(cap, (195, 215, 245, 95)))
+
+        near_peaks = (
+            (-120, 150), (310, 265), (640, 165), (960, 290),
+            (1310, 175), (1660, 275), (2040, 160),
+        )
+        self.near_mountain_shapes = _build_ridge_shapes(near_peaks, (13, 16, 36, 240))
+
         self.platforms = [
             Platform(WINDOW_WIDTH * 0.50, 195, 1120, 50, pass_through=False),
             Platform(WINDOW_WIDTH * 0.22, 385,  340, 22, pass_through=True),
@@ -197,11 +219,45 @@ class HolidayStage:
             Platform(WINDOW_WIDTH * 0.50, 725,  240, 22, pass_through=True),
         ] if include_platforms else []
 
+        # Batched static platforms + batched twinkling holiday bulbs (2 GPU draw calls total)
+        self.static_stage_shapes = arcade.shape_list.ShapeElementList()
+        self.bulb_list = arcade.SpriteList()
+        self.bulb_meta = []
+
+        for plat in self.platforms:
+            plat.build_static_shapes(self.static_stage_shapes)
+            if not plat.pass_through:
+                bulb_x = plat.left + 28.0
+                b_idx = 0
+                while bulb_x < plat.right - 28.0:
+                    col = _BULB_COLORS[b_idx % len(_BULB_COLORS)]
+                    by = plat.bottom - 5.0 - abs(math.sin(b_idx * 0.65)) * 5.0
+
+                    halo = arcade.Sprite(circle_tex, scale=18.0 / 28.0)
+                    halo.center_x, halo.center_y = bulb_x, by
+                    halo.color = col
+
+                    core = arcade.Sprite(circle_tex, scale=8.4 / 28.0)
+                    core.center_x, core.center_y = bulb_x, by
+                    core.color = col
+
+                    self.bulb_list.append(halo)
+                    self.bulb_list.append(core)
+                    self.bulb_meta.append((halo, core, b_idx))
+
+                    bulb_x += 46.0
+                    b_idx += 1
+
     def update(self, dt: float):
         self.time += dt
 
         for sprite, (phase, speed, base_a) in zip(self.star_list, self.star_meta):
             sprite.alpha = int(base_a * (0.65 + 0.35 * math.sin(self.time * speed + phase)))
+
+        for halo, core, b_idx in self.bulb_meta:
+            pulse = 0.65 + 0.35 * math.sin(self.time * 4.2 + b_idx * 0.9)
+            halo.alpha = int(55 * pulse)
+            core.alpha = int(180 + 75 * pulse)
 
         for sprite, meta in zip(self.snow_list, self.snow_meta):
             fall_spd, drift, phase, freq = meta
@@ -244,47 +300,21 @@ class HolidayStage:
 
         self.star_list.draw()
 
-        # Distant snow-capped mountain range with parallax shift
-        far_ridge = (
-            (-120 - px, 0),
-            (-120 - px, 230 - py),
-            (180 - px, 390 - py),
-            (460 - px, 250 - py),
-            (760 - px, 450 - py),
-            (1080 - px, 270 - py),
-            (1420 - px, 430 - py),
-            (1740 - px, 260 - py),
-            (2040 - px, 370 - py),
-            (2040 - px, 0),
-        )
-        arcade.draw_polygon_filled(far_ridge, (18, 22, 46, 220))
+        self.far_mountain_shapes.center_x = -px
+        self.far_mountain_shapes.center_y = -py
+        self.far_mountain_shapes.draw()
 
-        # Snow caps on the three main distant peaks
-        for peak_x, peak_y in ((180 - px, 390 - py), (760 - px, 450 - py), (1420 - px, 430 - py)):
-            arcade.draw_triangle_filled(
-                peak_x, peak_y,
-                peak_x - 68, peak_y - 46,
-                peak_x + 68, peak_y - 46,
-                (195, 215, 245, 95),
-            )
-
-        near_ridge = (
-            (-120 - px * 1.6, 0),
-            (-120 - px * 1.6, 150 - py * 1.4),
-            (310 - px * 1.6, 265 - py * 1.4),
-            (640 - px * 1.6, 165 - py * 1.4),
-            (960 - px * 1.6, 290 - py * 1.4),
-            (1310 - px * 1.6, 175 - py * 1.4),
-            (1660 - px * 1.6, 275 - py * 1.4),
-            (2040 - px * 1.6, 160 - py * 1.4),
-            (2040 - px * 1.6, 0),
-        )
-        arcade.draw_polygon_filled(near_ridge, (13, 16, 36, 240))
+        self.near_mountain_shapes.center_x = -px * 1.6
+        self.near_mountain_shapes.center_y = -py * 1.4
+        self.near_mountain_shapes.draw()
 
     def draw_foreground(self):
         self.snow_list.draw()
-        for plat in self.platforms:
-            plat.draw(self.time)
+        if self.platforms:
+            self.static_stage_shapes.draw()
+            self.bulb_list.draw()
+            for plat in self.platforms:
+                plat.draw_dynamic(self.time)
 
     def draw_fighter_shadows(self, fighters: tuple):
         """Projects a soft ground shadow onto the highest platform directly beneath each fighter."""
