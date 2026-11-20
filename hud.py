@@ -9,6 +9,7 @@ from config import (
     COLOR_TEXT, COLOR_TEXT_DIM, HEART_CHAR, SHIELD_MAX_HEALTH,
     SIDE_BLAST_ZONE, TOP_BLAST_ZONE, WINDOW_HEIGHT, WINDOW_WIDTH,
 )
+from settings import SETTINGS, key_name
 
 
 class _OffscreenIndicator:
@@ -212,14 +213,10 @@ class MatchHUD:
         self.p2_offscreen = _OffscreenIndicator("P2", COLOR_HUD_P2)
 
         bar_y = WINDOW_HEIGHT - 34
-        self.legend_p1 = arcade.Text(
-            "P1: A/D Move | W/Space Jump | S Drop | F Atk | G Heavy (Air: Dash Atk) | E Shield",
-            45, bar_y - 5, COLOR_TEXT, 12,
-        )
-        self.legend_p2 = arcade.Text(
-            "P2: Arrows Move | Up/RShift Jump | - Atk | . Heavy (Air: Dash Atk) | , Shield | F1 Boxes",
-            WINDOW_WIDTH - 45, bar_y - 5, COLOR_TEXT, 12, anchor_x="right",
-        )
+        self.legend_p1 = arcade.Text("", 45, bar_y - 5, COLOR_TEXT, 12)
+        self.legend_p2 = arcade.Text("", WINDOW_WIDTH - 45, bar_y - 5, COLOR_TEXT, 12, anchor_x="right")
+        self.refresh_control_labels()
+
         self.timer_lbl = arcade.Text(
             "00:00", WINDOW_WIDTH * 0.5, bar_y - 6, COLOR_GOLD, 18,
             anchor_x="center", bold=True,
@@ -239,9 +236,9 @@ class MatchHUD:
             font_size=64, anchor_x="center", bold=True,
         )
         self.pause_sub = arcade.Text(
-            "ESC: Resume   |   R: Restart   |   C: Char Select   |   F1: Hitboxes   |   Q: Main Menu",
+            "ESC: Resume  |  S: Settings  |  R: Restart  |  C: Char Select  |  F1: Hitboxes  |  Q: Main Menu",
             WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 25, COLOR_TEXT,
-            font_size=22, anchor_x="center",
+            font_size=21, anchor_x="center",
         )
         self.over_title = arcade.Text(
             "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 85, COLOR_GOLD,
@@ -259,6 +256,21 @@ class MatchHUD:
             "R: Rematch   |   C: Character Select   |   Q: Main Menu",
             WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 115, COLOR_GOLD,
             font_size=20, anchor_x="center", bold=True,
+        )
+
+    def refresh_control_labels(self):
+        """Syncs the top HUD control legends with the active keybinds and preset names."""
+        c1 = SETTINGS.p1_controls
+        c2 = SETTINGS.p2_controls
+        self.legend_p1.text = (
+            f"P1 [{SETTINGS.p1_preset}]: {key_name(c1['left'])}/{key_name(c1['right'])} Move | "
+            f"{key_name(c1['up'])}/{key_name(c1['jump'])} Jump | {key_name(c1['down'])} Drop | "
+            f"{key_name(c1['attack'])} Atk | {key_name(c1['heavy'])} Heavy | {key_name(c1['shield'])} Shield"
+        )
+        self.legend_p2.text = (
+            f"P2 [{SETTINGS.p2_preset}]: {key_name(c2['left'])}/{key_name(c2['right'])} Move | "
+            f"{key_name(c2['up'])}/{key_name(c2['jump'])} Jump | {key_name(c2['attack'])} Atk | "
+            f"{key_name(c2['heavy'])} Heavy | {key_name(c2['shield'])} Shield | F1 Boxes"
         )
 
     def draw(
