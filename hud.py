@@ -1,9 +1,10 @@
-"""Persistent cached arcade.Text HUD, camera-aware off-screen edge indicators, match timer, and overlays."""
+"""Persistent cached arcade.Text HUD, camera-aware off-screen edge indicators, match timer, and interactive overlays."""
 
 import math
 import random
 import arcade
 
+import config
 from config import (
     COLOR_GOLD, COLOR_HUD_BG, COLOR_HUD_BORDER, COLOR_HUD_P1, COLOR_HUD_P2,
     COLOR_TEXT, COLOR_TEXT_DIM, HEART_CHAR, SHIELD_MAX_HEALTH,
@@ -30,15 +31,15 @@ class _OffscreenIndicator:
         cam_w = max(1.0, cam_right - cam_left)
         cam_h = max(1.0, cam_top - cam_bottom)
 
-        off_left = player.center_x < cam_left
-        off_right = player.center_x > cam_right
-        off_top = player.center_y > cam_top
+        off_left = player.right < cam_left
+        off_right = player.left > cam_right
+        off_top = player.bottom > cam_top
 
         if not (off_left or off_right or off_top):
             return
 
-        x_dist = (cam_left - player.center_x) if off_left else ((player.center_x - cam_right) if off_right else 0.0)
-        y_dist = max(0.0, player.center_y - cam_top)
+        x_dist = (cam_left - player.right) if off_left else ((player.left - cam_right) if off_right else 0.0)
+        y_dist = max(0.0, player.bottom - cam_top)
 
         screen_x = ((player.center_x - cam_left) / cam_w) * WINDOW_WIDTH
         screen_y = ((player.center_y - cam_bottom) / cam_h) * WINDOW_HEIGHT
@@ -211,6 +212,7 @@ class MatchHUD:
         self.p2_card = _PlayerCard("PLAYER 2", COLOR_HUD_P2, left=False)
         self.p1_offscreen = _OffscreenIndicator("P1", COLOR_HUD_P1)
         self.p2_offscreen = _OffscreenIndicator("P2", COLOR_HUD_P2)
+        self.hovered_action: str | None = None
 
         bar_y = WINDOW_HEIGHT - 34
         self.legend_p1 = arcade.Text("", 45, bar_y - 5, COLOR_TEXT, 12)
@@ -231,32 +233,59 @@ class MatchHUD:
             "GAME!", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.52, COLOR_GOLD,
             font_size=138, anchor_x="center", anchor_y="center", bold=True,
         )
+
+        # Pause menu interactive buttons
         self.pause_title = arcade.Text(
-            "PAUSED", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 50, COLOR_GOLD,
-            font_size=64, anchor_x="center", bold=True,
+            "PAUSED", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 225, COLOR_GOLD,
+            font_size=60, anchor_x="center", bold=True,
         )
-        self.pause_sub = arcade.Text(
-            "ESC: Resume  |  S: Settings  |  R: Restart  |  C: Char Select  |  F1: Hitboxes  |  Q: Main Menu",
-            WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 25, COLOR_TEXT,
-            font_size=21, anchor_x="center",
-        )
+        pause_specs = [
+            ("resume", "RESUME  [ESC]"),
+            ("settings", "SETTINGS  [S]"),
+            ("restart", "RESTART MATCH  [R]"),
+            ("char_select", "CHARACTER SELECT  [C]"),
+            ("hitboxes", "HITBOXES: OFF  [F1]"),
+            ("main_menu", "MAIN MENU  [Q]"),
+        ]
+        self.pause_buttons: list[tuple[str, tuple[float, float, float, float], arcade.Text]] = []
+        for i, (act_id, label) in enumerate(pause_specs):
+            by = WINDOW_HEIGHT * 0.5 + 145.0 - i * 56.0
+            box = (WINDOW_WIDTH * 0.5, by, 400.0, 44.0)
+            lbl = arcade.Text(label, WINDOW_WIDTH * 0.5, by, COLOR_TEXT, 19, anchor_x="center", anchor_y="center", bold=True)
+            self.pause_buttons.append((act_id, box, lbl))
+
+        # Game Over interactive buttons
         self.over_title = arcade.Text(
-            "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 85, COLOR_GOLD,
+            "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 150, COLOR_GOLD,
             font_size=64, anchor_x="center", bold=True,
         )
         self.over_sub = arcade.Text(
-            "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 25, COLOR_TEXT,
+            "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 90, COLOR_TEXT,
             font_size=24, anchor_x="center",
         )
         self.over_stats = arcade.Text(
-            "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 35, COLOR_TEXT_DIM,
+            "", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 20, COLOR_TEXT_DIM,
             font_size=18, anchor_x="center", multiline=True, width=900, align="center",
         )
-        self.over_hint = arcade.Text(
-            "R: Rematch   |   C: Character Select   |   Q: Main Menu",
-            WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 115, COLOR_GOLD,
-            font_size=20, anchor_x="center", bold=True,
-        )
+        over_specs = [
+            ("restart", "REMATCH  [R]"),
+            ("char_select", "CHARACTER SELECT  [C]"),
+            ("main_menu", "MAIN MENU  [Q]"),
+        ]
+        self.over_buttons: list[tuple[str, tuple[float, float, float, float], arcade.Text]] = []
+        for i, (act_id, label) in enumerate(over_specs):
+            by = WINDOW_HEIGHT * 0.5 - 75.0 - i * 58.0
+            box = (WINDOW_WIDTH * 0.5, by, 400.0, 46.0)
+            lbl = arcade.Text(label, WINDOW_WIDTH * 0.5, by, COLOR_TEXT, 20, anchor_x="center", anchor_y="center", bold=True)
+            self.over_buttons.append((act_id, box, lbl))
+
+    def get_overlay_action_at(self, vx: float, vy: float, is_paused: bool, game_state: str) -> str | None:
+        """Returns the button action ID under (vx, vy) when Pause or Game Over is active."""
+        buttons = self.pause_buttons if is_paused else (self.over_buttons if game_state == "OVER" else ())
+        for act_id, (bx, by, bw, bh), _ in buttons:
+            if (bx - bw * 0.5) <= vx <= (bx + bw * 0.5) and (by - bh * 0.5) <= vy <= (by + bh * 0.5):
+                return act_id
+        return None
 
     def refresh_control_labels(self):
         """Syncs the top HUD control legends with the active keybinds and preset names."""
@@ -272,6 +301,23 @@ class MatchHUD:
             f"{key_name(c2['up'])}/{key_name(c2['jump'])} Jump | {key_name(c2['attack'])} Atk | "
             f"{key_name(c2['heavy'])} Heavy | {key_name(c2['shield'])} Shield | F1 Boxes"
         )
+
+    def _draw_button_list(self, buttons: list[tuple[str, tuple[float, float, float, float], arcade.Text]]):
+        for act_id, (bx, by, bw, bh), lbl in buttons:
+            if act_id == "hitboxes":
+                lbl.text = f"HITBOXES: {'ON' if config.DEBUG_HITBOXES else 'OFF'}  [F1]"
+            hovered = self.hovered_action == act_id
+            arcade.draw_rect_filled(
+                arcade.XYWH(bx, by, bw, bh),
+                (46, 54, 84, 240) if hovered else (20, 24, 40, 225),
+            )
+            arcade.draw_rect_outline(
+                arcade.XYWH(bx, by, bw, bh),
+                COLOR_GOLD if hovered else (95, 115, 155, 220),
+                border_width=3 if hovered else 2,
+            )
+            lbl.color = COLOR_GOLD if hovered else COLOR_TEXT
+            lbl.draw()
 
     def draw(
         self, p1, p2, game_state: str, intro_timer: int, is_paused: bool,
@@ -306,9 +352,9 @@ class MatchHUD:
             self.game_set_text.draw()
 
         if is_paused:
-            arcade.draw_rect_filled(arcade.XYWH(WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5, WINDOW_WIDTH, WINDOW_HEIGHT), (0, 0, 0, 170))
+            arcade.draw_rect_filled(arcade.XYWH(WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5, WINDOW_WIDTH, WINDOW_HEIGHT), (0, 0, 0, 175))
             self.pause_title.draw()
-            self.pause_sub.draw()
+            self._draw_button_list(self.pause_buttons)
 
         if game_state == "OVER":
             arcade.draw_rect_filled(arcade.XYWH(WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5, WINDOW_WIDTH, WINDOW_HEIGHT), (0, 0, 0, 190))
@@ -325,4 +371,4 @@ class MatchHUD:
             self.over_title.draw()
             self.over_sub.draw()
             self.over_stats.draw()
-            self.over_hint.draw()
+            self._draw_button_list(self.over_buttons)

@@ -17,6 +17,16 @@ class XMassFightWindow(arcade.Window):
         )
         self.viewport_rect = arcade.LBWH(0, 0, self.width, self.height)
         SETTINGS.apply_display(self)
+        self.on_resize(self.width, self.height)
+
+    def sync_default_camera(self):
+        """Locks default_camera to 1920x1080 logical coordinates centered in the active viewport."""
+        self.default_camera.viewport = self.viewport_rect
+        self.default_camera.projection = arcade.LRBT(
+            -WINDOW_WIDTH * 0.5, WINDOW_WIDTH * 0.5,
+            -WINDOW_HEIGHT * 0.5, WINDOW_HEIGHT * 0.5,
+        )
+        self.default_camera.position = (WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5)
 
     def on_resize(self, width: int, height: int):
         """Maps the fixed 1920x1080 logical arena/UI space cleanly onto any physical resolution."""
@@ -34,8 +44,7 @@ class XMassFightWindow(arcade.Window):
         vp_y = (height - vp_h) // 2
 
         self.viewport_rect = arcade.LBWH(vp_x, vp_y, vp_w, vp_h)
-        self.default_camera.viewport = self.viewport_rect
-        self.default_camera.projection = arcade.LRBT(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
+        self.sync_default_camera()
 
         if self.current_view is not None:
             self.current_view.on_resize(width, height)

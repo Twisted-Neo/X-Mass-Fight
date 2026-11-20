@@ -6,6 +6,7 @@ import arcade
 
 import config
 from assets import get_fighter_animations
+from bloom import get_bloom_renderer
 from characters import CHARACTER_ROSTER
 from config import (
     ATTACK_REACH, BASE_KNOCKBACK_X, BASE_KNOCKBACK_Y, BOTTOM_BLAST_ZONE,
@@ -21,7 +22,6 @@ from config import (
     MAX_CHARGE_FRAMES, MAX_FRAME_TIME, MAX_STEPS_PER_FRAME, PHYSICS_STEP,
     SIDE_BLAST_ZONE, SIDE_COMBO_KB_MULT, TOP_BLAST_ZONE,
     WINDOW_HEIGHT, WINDOW_WIDTH,
-    WORLD_MAX_X, WORLD_MAX_Y, WORLD_MIN_X, WORLD_MIN_Y,
 )
 from effects import EffectSystem
 from fighter import Fighter
@@ -31,6 +31,53 @@ from settings import (
     get_available_resolutions, key_name,
 )
 from stage import HolidayStage
+
+PLAY_AREA_MIN_X = 0.0
+PLAY_AREA_MAX_X = float(WINDOW_WIDTH)
+PLAY_AREA_MIN_Y = 0.0
+PLAY_AREA_MAX_Y = float(WINDOW_HEIGHT)
+
+
+def _activate_default_camera(window: arcade.Window):
+    if hasattr(window, "sync_default_camera"):
+        window.sync_default_camera()
+    window.default_camera.use()
+
+
+def _draw_stage_with_optional_bloom(window: arcade.Window, stage: HolidayStage):
+    """Renders the winter stage backdrop/foreground with Bloom when enabled, preserving letterbox viewport."""
+    bloom = get_bloom_renderer(window) if getattr(SETTINGS, "bloom_enabled", True) else None
+    if bloom and bloom.available:
+        window.default_camera.viewport = arcade.LBWH(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
+        window.default_camera.projection = arcade.LRBT(
+            -WINDOW_WIDTH * 0.5, WINDOW_WIDTH * 0.5,
+            -WINDOW_HEIGHT * 0.5, WINDOW_HEIGHT * 0.5,
+        )
+        window.default_camera.position = (WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5)
+        window.default_camera.use()
+        with bloom.capture():
+            stage.draw_backdrop()
+            stage.draw_foreground()
+        _activate_default_camera(window)
+        bloom.render()
+    else:
+        _activate_default_camera(window)
+        stage.draw_backdrop()
+        stage.draw_foreground()
+
+
+def _to_virtual(window: arcade.Window, x: float, y: float) -> tuple[float, float]:
+    if hasattr(window, "screen_to_virtual"):
+        return window.screen_to_virtual(x, y)
+    return (
+        x * (WINDOW_WIDTH / max(1, window.width)),
+        y * (WINDOW_HEIGHT / max(1, window.height)),
+    )
+
+
+def _in_box(vx: float, vy: float, box: tuple[float, float, float, float]) -> bool:
+    cx, cy, w, h = box
+    return (cx - w * 0.5) <= vx <= (cx + w * 0.5) and (cy - h * 0.5) <= vy <= (cy + h * 0.5)
 
 
 class TitleView(arcade.View):
@@ -49,13 +96,17 @@ class TitleView(arcade.View):
             font_size=28, anchor_x="center",
         )
         self.hint_lbl = arcade.Text(
-            "W/S or Up/Down: Navigate   |   Enter / Space: Select",
+            "Mouse or W/S / Up/Down: Navigate   |   Click or Enter / Space: Select",
             WINDOW_WIDTH * 0.5, 60, COLOR_TEXT_DIM, font_size=18, anchor_x="center",
         )
-        self.option_lbls = [
-            arcade.Text(opt, WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.43 - i * 64, COLOR_TEXT_DIM, 32, anchor_x="center")
-            for i, opt in enumerate(self.options)
-        ]
+        self.option_boxes: list[tuple[float, float, float, float]] = []
+        self.option_lbls: list[arcade.Text] = []
+        for i, opt in enumerate(self.options):
+            oy = WINDOW_HEIGHT * 0.43 - i * 64.0
+            self.option_boxes.append((WINDOW_WIDTH * 0.5, oy + 10.0, 480.0, 52.0))
+            self.option_lbls.append(
+                arcade.Text(opt, WINDOW_WIDTH * 0.5, oy, COLOR_TEXT_DIM, 32, anchor_x="center")
+            )
         self._refresh_menu_labels()
 
     def _refresh_menu_labels(self):
@@ -65,16 +116,30 @@ class TitleView(arcade.View):
             lbl.color = COLOR_GOLD if active else COLOR_TEXT_DIM
             lbl.bold = active
 
+    def _activate_choice(self):
+        choice = self.options[self.selected]
+        if choice == "START BATTLE":
+            self.window.show_view(CharacterSelectView())
+        elif choice == "SETTINGS":
+            self.window.show_view(SettingsView())
+        elif choice == "CONTROLS":
+            self.window.show_view(ControlsView())
+        else:
+            arcade.exit()
+
     def on_update(self, delta_time: float):
         self.stage.update(min(delta_time, MAX_FRAME_TIME))
 
     def on_draw(self):
         self.clear()
-        self.window.default_camera.use()
-        self.stage.draw_backdrop()
-        self.stage.draw_foreground()
+        _draw_stage_with_optional_bloom(self.window, self.stage)
         self.title_lbl.draw()
         self.sub_lbl.draw()
+
+        bx, by, bw, bh = self.option_boxes[self.selected]
+        arcade.draw_rect_filled(arcade.XYWH(bx, by, bw, bh), (255, 215, 75, 26))
+        arcade.draw_rect_outline(arcade.XYWH(bx, by, bw, bh), (255, 215, 75, 140), border_width=2)
+
         for lbl in self.option_lbls:
             lbl.draw()
         self.hint_lbl.draw()
@@ -87,37 +152,44 @@ class TitleView(arcade.View):
             self.selected = (self.selected + 1) % len(self.options)
             self._refresh_menu_labels()
         elif key in (arcade.key.ENTER, arcade.key.SPACE):
-            choice = self.options[self.selected]
-            if choice == "START BATTLE":
-                self.window.show_view(CharacterSelectView())
-            elif choice == "SETTINGS":
-                self.window.show_view(SettingsView())
-            elif choice == "CONTROLS":
-                self.window.show_view(ControlsView())
-            else:
-                arcade.exit()
+            self._activate_choice()
+
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
+        vx, vy = _to_virtual(self.window, x, y)
+        for i, box in enumerate(self.option_boxes):
+            if _in_box(vx, vy, box):
+                if self.selected != i:
+                    self.selected = i
+                    self._refresh_menu_labels()
+                return
+
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+        vx, vy = _to_virtual(self.window, x, y)
+        for i, box in enumerate(self.option_boxes):
+            if _in_box(vx, vy, box):
+                self.selected = i
+                self._refresh_menu_labels()
+                self._activate_choice()
+                return
 
 
 class SettingsView(arcade.View):
-    """Display Mode, Resolution, P1/P2 Keybinds, and Named Control Presets View."""
+    """Display Mode, Resolution, Bloom, P1/P2 Keybinds, and Named Control Presets View."""
 
     def __init__(self, return_view: arcade.View | None = None):
         super().__init__()
         self.return_view = return_view
         self.stage = HolidayStage(include_platforms=False, snow_count=95)
 
-        # Navigation rows:
-        # 0: Display Mode
-        # 1: Resolution
-        # 2: Preset selector (< Preset Name >)
-        # 3: Preset actions ([+ SAVE NEW] / [DELETE])
-        # 4 .. 4+N-1: Individual action keybinds
-        # 4+N: Reset to Defaults
-        # 5+N: Save & Back
         self.num_actions = len(ACTION_SPECS)
-        self.row_preset_select = 2
-        self.row_preset_actions = 3
-        self.row_actions_start = 4
+        self.row_mode = 0
+        self.row_res = 1
+        self.row_bloom = 2
+        self.row_preset_select = 3
+        self.row_preset_actions = 4
+        self.row_actions_start = 5
         self.row_reset = self.row_actions_start + self.num_actions
         self.row_back = self.row_reset + 1
 
@@ -131,44 +203,53 @@ class SettingsView(arcade.View):
         self.naming_text: str = ""
         self.naming_is_default: bool = False
         self.cursor_timer: float = 0.0
+        self.modal_hover_btn: int | None = None  # 0 = Save, 1 = Cancel
 
         self.header = arcade.Text(
-            "SETTINGS", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT - 74, COLOR_GOLD,
-            font_size=50, anchor_x="center", bold=True,
+            "SETTINGS", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT - 68, COLOR_GOLD,
+            font_size=48, anchor_x="center", bold=True,
         )
         self.status_lbl = arcade.Text(
-            "Create, load, and save custom control presets — changes save automatically to settings.json",
-            WINDOW_WIDTH * 0.5, WINDOW_HEIGHT - 116, COLOR_TEXT_DIM,
+            "Configure graphics, display, and control presets — changes save automatically to settings.json",
+            WINDOW_WIDTH * 0.5, WINDOW_HEIGHT - 108, COLOR_TEXT_DIM,
             font_size=16, anchor_x="center",
         )
 
-        # Display panel geometry
-        self.disp_box = (WINDOW_WIDTH * 0.5, 868.0, 1560.0, 136.0)
-        self.lbl_disp_title = arcade.Text("DISPLAY", 210.0, 908.0, COLOR_GOLD, 18, bold=True)
-        self.lbl_mode_name = arcade.Text("Display Mode", 240.0, 868.0, COLOR_TEXT, 20)
-        self.lbl_mode_val = arcade.Text("", 1680.0, 868.0, COLOR_GOLD, 20, anchor_x="right", bold=True)
-        self.lbl_res_name = arcade.Text("Resolution", 240.0, 822.0, COLOR_TEXT, 20)
-        self.lbl_res_val = arcade.Text("", 1680.0, 822.0, COLOR_GOLD, 20, anchor_x="right", bold=True)
+        # Display & Graphics panel geometry (3 rows: Display Mode, Resolution, Bloom)
+        self.disp_box = (WINDOW_WIDTH * 0.5, 862.0, 1560.0, 168.0)
+        self.mode_row_box = (WINDOW_WIDTH * 0.5, 890.0, 1520.0, 36.0)
+        self.res_row_box = (WINDOW_WIDTH * 0.5, 848.0, 1520.0, 36.0)
+        self.bloom_row_box = (WINDOW_WIDTH * 0.5, 806.0, 1520.0, 36.0)
+
+        self.lbl_disp_title = arcade.Text("DISPLAY & GRAPHICS", 210.0, 920.0, COLOR_GOLD, 18, bold=True)
+        self.lbl_mode_name = arcade.Text("Display Mode", 240.0, 882.0, COLOR_TEXT, 19)
+        self.lbl_mode_val = arcade.Text("", 1680.0, 882.0, COLOR_GOLD, 19, anchor_x="right", bold=True)
+        self.lbl_res_name = arcade.Text("Resolution", 240.0, 840.0, COLOR_TEXT, 19)
+        self.lbl_res_val = arcade.Text("", 1680.0, 840.0, COLOR_GOLD, 19, anchor_x="right", bold=True)
+        self.lbl_bloom_name = arcade.Text("Bloom Glow", 240.0, 798.0, COLOR_TEXT, 19)
+        self.lbl_bloom_val = arcade.Text("", 1680.0, 798.0, COLOR_GOLD, 19, anchor_x="right", bold=True)
 
         # Controls + Presets panels geometry
-        self.p1_box = (WINDOW_WIDTH * 0.295, 472.0, 755.0, 616.0)
-        self.p2_box = (WINDOW_WIDTH * 0.705, 472.0, 755.0, 616.0)
-        self.lbl_p1_head = arcade.Text("PLAYER 1 CONTROLS", self.p1_box[0], 744.0, COLOR_HUD_P1, 22, anchor_x="center", bold=True)
-        self.lbl_p2_head = arcade.Text("PLAYER 2 CONTROLS", self.p2_box[0], 744.0, COLOR_HUD_P2, 22, anchor_x="center", bold=True)
+        self.p1_box = (WINDOW_WIDTH * 0.295, 456.0, 755.0, 608.0)
+        self.p2_box = (WINDOW_WIDTH * 0.705, 456.0, 755.0, 608.0)
+        self.lbl_p1_head = arcade.Text("PLAYER 1 CONTROLS", self.p1_box[0], 726.0, COLOR_HUD_P1, 22, anchor_x="center", bold=True)
+        self.lbl_p2_head = arcade.Text("PLAYER 2 CONTROLS", self.p2_box[0], 726.0, COLOR_HUD_P2, 22, anchor_x="center", bold=True)
 
-        # Preset selector row (y = 696)
-        self.preset_select_y = 696.0
+        # Preset selector row
+        self.preset_select_y = 680.0
+        self.p1_preset_row_box = (self.p1_box[0], self.preset_select_y + 6.0, self.p1_box[2] - 44.0, 36.0)
+        self.p2_preset_row_box = (self.p2_box[0], self.preset_select_y + 6.0, self.p2_box[2] - 44.0, 36.0)
         self.lbl_p1_preset_tag = arcade.Text("Preset", self.p1_box[0] - 335.0, self.preset_select_y, COLOR_TEXT_DIM, 18, bold=True)
         self.lbl_p1_preset_val = arcade.Text("", self.p1_box[0] + 335.0, self.preset_select_y, COLOR_GOLD, 18, anchor_x="right", bold=True)
         self.lbl_p2_preset_tag = arcade.Text("Preset", self.p2_box[0] - 335.0, self.preset_select_y, COLOR_TEXT_DIM, 18, bold=True)
         self.lbl_p2_preset_val = arcade.Text("", self.p2_box[0] + 335.0, self.preset_select_y, COLOR_GOLD, 18, anchor_x="right", bold=True)
 
-        # Preset save/delete button row (y = 650)
-        self.preset_btn_y = 650.0
-        self.p1_save_box = (self.p1_box[0] - 115.0, self.preset_btn_y, 220.0, 34.0)
-        self.p1_del_box = (self.p1_box[0] + 150.0, self.preset_btn_y, 180.0, 34.0)
-        self.p2_save_box = (self.p2_box[0] - 115.0, self.preset_btn_y, 220.0, 34.0)
-        self.p2_del_box = (self.p2_box[0] + 150.0, self.preset_btn_y, 180.0, 34.0)
+        # Preset save/delete button row
+        self.preset_btn_y = 636.0
+        self.p1_save_box = (self.p1_box[0] - 115.0, self.preset_btn_y, 220.0, 32.0)
+        self.p1_del_box = (self.p1_box[0] + 150.0, self.preset_btn_y, 180.0, 32.0)
+        self.p2_save_box = (self.p2_box[0] - 115.0, self.preset_btn_y, 220.0, 32.0)
+        self.p2_del_box = (self.p2_box[0] + 150.0, self.preset_btn_y, 180.0, 32.0)
 
         self.lbl_p1_save = arcade.Text("+ SAVE NEW", self.p1_save_box[0], self.preset_btn_y, COLOR_TEXT, 14, anchor_x="center", anchor_y="center", bold=True)
         self.lbl_p1_del = arcade.Text("DELETE", self.p1_del_box[0], self.preset_btn_y, COLOR_TEXT_DIM, 14, anchor_x="center", anchor_y="center", bold=True)
@@ -181,8 +262,8 @@ class SettingsView(arcade.View):
         self.p2_action_lbls: list[arcade.Text] = []
         self.p2_key_lbls: list[arcade.Text] = []
 
-        self.action_start_y = 588.0
-        self.action_step_y = 48.0
+        self.action_start_y = 574.0
+        self.action_step_y = 47.0
         for i, (_, act_label) in enumerate(ACTION_SPECS):
             ay = self.action_start_y - i * self.action_step_y
             self.p1_action_lbls.append(arcade.Text(act_label, self.p1_box[0] - 335.0, ay, COLOR_TEXT, 18))
@@ -191,31 +272,34 @@ class SettingsView(arcade.View):
             self.p2_key_lbls.append(arcade.Text("", self.p2_box[0] + 335.0, ay, COLOR_GOLD, 18, anchor_x="right", bold=True))
 
         # Bottom action buttons
-        self.reset_btn_box = (WINDOW_WIDTH * 0.36, 106.0, 420.0, 50.0)
-        self.back_btn_box = (WINDOW_WIDTH * 0.64, 106.0, 420.0, 50.0)
-        self.lbl_reset = arcade.Text("RESET TO DEFAULTS", self.reset_btn_box[0], 106.0, COLOR_TEXT, 19, anchor_x="center", anchor_y="center", bold=True)
-        self.lbl_back = arcade.Text("SAVE & BACK", self.back_btn_box[0], 106.0, COLOR_TEXT, 19, anchor_x="center", anchor_y="center", bold=True)
+        self.reset_btn_box = (WINDOW_WIDTH * 0.36, 100.0, 420.0, 48.0)
+        self.back_btn_box = (WINDOW_WIDTH * 0.64, 100.0, 420.0, 48.0)
+        self.lbl_reset = arcade.Text("RESET TO DEFAULTS", self.reset_btn_box[0], 100.0, COLOR_TEXT, 19, anchor_x="center", anchor_y="center", bold=True)
+        self.lbl_back = arcade.Text("SAVE & BACK", self.back_btn_box[0], 100.0, COLOR_TEXT, 19, anchor_x="center", anchor_y="center", bold=True)
 
-        # Modal text-entry labels
-        self.modal_title = arcade.Text("", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 88, COLOR_GOLD, 28, anchor_x="center", bold=True)
+        # Modal text-entry geometry & labels
+        mx, my = WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5
+        self.modal_box = (mx, my, 760.0, 310.0)
+        self.modal_save_box = (mx - 125.0, my - 92.0, 210.0, 44.0)
+        self.modal_cancel_box = (mx + 125.0, my - 92.0, 210.0, 44.0)
+        self.modal_title = arcade.Text("", mx, my + 102, COLOR_GOLD, 28, anchor_x="center", bold=True)
         self.modal_sub = arcade.Text(
             f"Type a preset name (up to {MAX_PRESET_NAME_LEN} chars) to save current controls:",
-            WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 + 46, COLOR_TEXT_DIM, 17, anchor_x="center",
+            mx, my + 58, COLOR_TEXT_DIM, 17, anchor_x="center",
         )
-        self.modal_input_lbl = arcade.Text("", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 8, (255, 255, 255, 255), 30, anchor_x="center", anchor_y="center", bold=True)
-        self.modal_hint = arcade.Text(
-            "ENTER: Save Preset   |   ESC: Cancel",
-            WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5 - 82, COLOR_GOLD, 18, anchor_x="center", bold=True,
-        )
+        self.modal_input_lbl = arcade.Text("", mx, my + 2, (255, 255, 255, 255), 30, anchor_x="center", anchor_y="center", bold=True)
+        self.lbl_modal_save = arcade.Text("SAVE PRESET", self.modal_save_box[0], self.modal_save_box[1], COLOR_TEXT, 16, anchor_x="center", anchor_y="center", bold=True)
+        self.lbl_modal_cancel = arcade.Text("CANCEL", self.modal_cancel_box[0], self.modal_cancel_box[1], COLOR_TEXT, 16, anchor_x="center", anchor_y="center", bold=True)
 
         self.footer = arcade.Text(
-            "Up/Down: Navigate  |  Left/Right: Change / Switch Column  |  Enter / Click: Select  |  ESC: Back",
-            WINDOW_WIDTH * 0.5, 40.0, COLOR_TEXT_DIM, font_size=16, anchor_x="center",
+            "Mouse or Arrows: Navigate  |  Click or Enter: Select / Rebind  |  ESC: Back",
+            WINDOW_WIDTH * 0.5, 38.0, COLOR_TEXT_DIM, font_size=16, anchor_x="center",
         )
         self._refresh_labels()
 
     def _open_save_modal(self, player_num: int):
         self.naming_player = player_num
+        self.modal_hover_btn = None
         cur_preset = SETTINGS.p1_preset if player_num == 1 else SETTINGS.p2_preset
         if SETTINGS.is_custom_preset(cur_preset):
             self.naming_text = cur_preset
@@ -233,6 +317,7 @@ class SettingsView(arcade.View):
         self.status_lbl.text = msg
         if ok:
             self.naming_player = None
+            self.modal_hover_btn = None
             self._refresh_labels()
 
     def _delete_active_preset(self, player_num: int):
@@ -241,9 +326,16 @@ class SettingsView(arcade.View):
         self.status_lbl.text = msg
         self._refresh_labels()
 
+    def _toggle_bloom(self):
+        current = bool(getattr(SETTINGS, "bloom_enabled", True))
+        SETTINGS.bloom_enabled = not current
+        SETTINGS.save()
+        self.status_lbl.text = f"Bloom post-processing turned {'ON' if SETTINGS.bloom_enabled else 'OFF'}"
+        self._refresh_labels()
+
     def _refresh_labels(self):
         self.lbl_mode_val.text = f"<  {SETTINGS.display_mode_label()}  >"
-        self.lbl_mode_val.color = COLOR_GOLD if self.selected_row == 0 else COLOR_TEXT
+        self.lbl_mode_val.color = COLOR_GOLD if self.selected_row == self.row_mode else COLOR_TEXT
 
         if SETTINGS.display_mode == "borderless":
             scr = getattr(self.window, "screen", None)
@@ -254,9 +346,15 @@ class SettingsView(arcade.View):
         else:
             rw, rh = SETTINGS.resolution
             self.lbl_res_val.text = f"<  {rw} x {rh}  >"
-            self.lbl_res_val.color = COLOR_GOLD if self.selected_row == 1 else COLOR_TEXT
+            self.lbl_res_val.color = COLOR_GOLD if self.selected_row == self.row_res else COLOR_TEXT
 
-        # Preset selector labels
+        bloom_on = bool(getattr(SETTINGS, "bloom_enabled", True))
+        self.lbl_bloom_val.text = f"<  {'ON' if bloom_on else 'OFF'}  >"
+        self.lbl_bloom_val.color = (
+            COLOR_GOLD if self.selected_row == self.row_bloom
+            else ((140, 235, 165, 255) if bloom_on else COLOR_TEXT_DIM)
+        )
+
         p1_sel_preset = (self.selected_row == self.row_preset_select and self.selected_col == 0)
         p2_sel_preset = (self.selected_row == self.row_preset_select and self.selected_col == 1)
         self.lbl_p1_preset_val.text = f"<  {SETTINGS.p1_preset}  >"
@@ -264,7 +362,6 @@ class SettingsView(arcade.View):
         self.lbl_p2_preset_val.text = f"<  {SETTINGS.p2_preset}  >"
         self.lbl_p2_preset_val.color = COLOR_GOLD if p2_sel_preset else (130, 225, 255, 255)
 
-        # Preset Save / Delete button labels
         p1_act_row = (self.selected_row == self.row_preset_actions and self.selected_col == 0)
         p2_act_row = (self.selected_row == self.row_preset_actions and self.selected_col == 1)
         p1_can_del = SETTINGS.is_custom_preset(SETTINGS.p1_preset)
@@ -282,7 +379,6 @@ class SettingsView(arcade.View):
             else ((220, 120, 120, 255) if p2_can_del else (95, 105, 125, 200))
         )
 
-        # Keybind rows
         for i, (act_id, _) in enumerate(ACTION_SPECS):
             row_idx = self.row_actions_start + i
             p1_sel = (self.selected_row == row_idx and self.selected_col == 0)
@@ -352,32 +448,36 @@ class SettingsView(arcade.View):
 
     def on_draw(self):
         self.clear()
-        self.window.default_camera.use()
-        self.stage.draw_backdrop()
-        self.stage.draw_foreground()
+        _draw_stage_with_optional_bloom(self.window, self.stage)
 
         self.header.draw()
         self.status_lbl.draw()
 
-        # Display panel
         dcx, dcy, dcw, dch = self.disp_box
         arcade.draw_rect_filled(arcade.XYWH(dcx, dcy, dcw, dch), COLOR_HUD_BG)
-        arcade.draw_rect_outline(arcade.XYWH(dcx, dcy, dcw, dch), COLOR_GOLD if self.selected_row in (0, 1) else (75, 90, 120, 255), border_width=3)
+        arcade.draw_rect_outline(
+            arcade.XYWH(dcx, dcy, dcw, dch),
+            COLOR_GOLD if self.selected_row in (self.row_mode, self.row_res, self.row_bloom) else (75, 90, 120, 255),
+            border_width=3,
+        )
 
-        if self.selected_row == 0:
-            arcade.draw_rect_filled(arcade.XYWH(dcx, 876.0, dcw - 40, 38), (255, 215, 75, 32))
-            arcade.draw_rect_outline(arcade.XYWH(dcx, 876.0, dcw - 40, 38), COLOR_GOLD, border_width=2)
-        elif self.selected_row == 1:
-            arcade.draw_rect_filled(arcade.XYWH(dcx, 830.0, dcw - 40, 38), (255, 215, 75, 32))
-            arcade.draw_rect_outline(arcade.XYWH(dcx, 830.0, dcw - 40, 38), COLOR_GOLD, border_width=2)
+        for r_idx, r_box in (
+            (self.row_mode, self.mode_row_box),
+            (self.row_res, self.res_row_box),
+            (self.row_bloom, self.bloom_row_box),
+        ):
+            if self.selected_row == r_idx:
+                arcade.draw_rect_filled(arcade.XYWH(r_box[0], r_box[1], r_box[2], r_box[3]), (255, 215, 75, 32))
+                arcade.draw_rect_outline(arcade.XYWH(r_box[0], r_box[1], r_box[2], r_box[3]), COLOR_GOLD, border_width=2)
 
         self.lbl_disp_title.draw()
         self.lbl_mode_name.draw()
         self.lbl_mode_val.draw()
         self.lbl_res_name.draw()
         self.lbl_res_val.draw()
+        self.lbl_bloom_name.draw()
+        self.lbl_bloom_val.draw()
 
-        # P1 & P2 Controls panels
         for col_idx, (box, accent) in enumerate(((self.p1_box, COLOR_HUD_P1), (self.p2_box, COLOR_HUD_P2))):
             bx, by, bw, bh = box
             active_panel = (self.row_preset_select <= self.selected_row < self.row_reset) and (self.selected_col == col_idx)
@@ -387,19 +487,17 @@ class SettingsView(arcade.View):
         self.lbl_p1_head.draw()
         self.lbl_p2_head.draw()
 
-        # Preset selector highlight bar
         if self.selected_row == self.row_preset_select:
             bx = self.p1_box[0] if self.selected_col == 0 else self.p2_box[0]
             bw = self.p1_box[2] - 44.0
-            arcade.draw_rect_filled(arcade.XYWH(bx, self.preset_select_y + 6.0, bw, 38.0), (255, 215, 75, 34))
-            arcade.draw_rect_outline(arcade.XYWH(bx, self.preset_select_y + 6.0, bw, 38.0), COLOR_GOLD, border_width=2)
+            arcade.draw_rect_filled(arcade.XYWH(bx, self.preset_select_y + 6.0, bw, 36.0), (255, 215, 75, 34))
+            arcade.draw_rect_outline(arcade.XYWH(bx, self.preset_select_y + 6.0, bw, 36.0), COLOR_GOLD, border_width=2)
 
         self.lbl_p1_preset_tag.draw()
         self.lbl_p1_preset_val.draw()
         self.lbl_p2_preset_tag.draw()
         self.lbl_p2_preset_val.draw()
 
-        # Preset Save / Delete mini-buttons
         for col_idx, (save_box, del_box, preset_name) in enumerate((
             (self.p1_save_box, self.p1_del_box, SETTINGS.p1_preset),
             (self.p2_save_box, self.p2_del_box, SETTINGS.p2_preset),
@@ -423,11 +521,9 @@ class SettingsView(arcade.View):
         self.lbl_p2_save.draw()
         self.lbl_p2_del.draw()
 
-        # Divider line between preset controls and keybinds
         for box in (self.p1_box, self.p2_box):
-            arcade.draw_line(box[0] - box[2] * 0.45, 622.0, box[0] + box[2] * 0.45, 622.0, (80, 95, 130, 180), line_width=1.5)
+            arcade.draw_line(box[0] - box[2] * 0.45, 608.0, box[0] + box[2] * 0.45, 608.0, (80, 95, 130, 180), line_width=1.5)
 
-        # Action keybind rows
         for i in range(self.num_actions):
             row_idx = self.row_actions_start + i
             ay = self.action_start_y - i * self.action_step_y + 6.0
@@ -436,15 +532,14 @@ class SettingsView(arcade.View):
                 bw = self.p1_box[2] - 44.0
                 fill_col = (110, 235, 255, 45) if self.listening else (255, 215, 75, 34)
                 rim_col = (110, 235, 255, 255) if self.listening else COLOR_GOLD
-                arcade.draw_rect_filled(arcade.XYWH(bx, ay, bw, 38.0), fill_col)
-                arcade.draw_rect_outline(arcade.XYWH(bx, ay, bw, 38.0), rim_col, border_width=2)
+                arcade.draw_rect_filled(arcade.XYWH(bx, ay, bw, 36.0), fill_col)
+                arcade.draw_rect_outline(arcade.XYWH(bx, ay, bw, 36.0), rim_col, border_width=2)
 
             self.p1_action_lbls[i].draw()
             self.p1_key_lbls[i].draw()
             self.p2_action_lbls[i].draw()
             self.p2_key_lbls[i].draw()
 
-        # Bottom buttons
         for row_idx, box, lbl in (
             (self.row_reset, self.reset_btn_box, self.lbl_reset),
             (self.row_back, self.back_btn_box, self.lbl_back),
@@ -457,20 +552,30 @@ class SettingsView(arcade.View):
 
         self.footer.draw()
 
-        # Modal overlay when naming a new preset
         if self.naming_player is not None:
             arcade.draw_rect_filled(
                 arcade.XYWH(WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5, WINDOW_WIDTH, WINDOW_HEIGHT),
                 (0, 0, 0, 195),
             )
-            mw, mh = 760.0, 280.0
-            mx, my = WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5
+            mx, my, mw, mh = self.modal_box
             accent = COLOR_HUD_P1 if self.naming_player == 1 else COLOR_HUD_P2
             arcade.draw_rect_filled(arcade.XYWH(mx, my, mw, mh), (16, 20, 36, 250))
             arcade.draw_rect_outline(arcade.XYWH(mx, my, mw, mh), accent, border_width=4)
 
-            arcade.draw_rect_filled(arcade.XYWH(mx, my - 8, 560.0, 58.0), (10, 13, 24, 255))
-            arcade.draw_rect_outline(arcade.XYWH(mx, my - 8, 560.0, 58.0), COLOR_GOLD, border_width=2.5)
+            arcade.draw_rect_filled(arcade.XYWH(mx, my + 2, 560.0, 58.0), (10, 13, 24, 255))
+            arcade.draw_rect_outline(arcade.XYWH(mx, my + 2, 560.0, 58.0), COLOR_GOLD, border_width=2.5)
+
+            for btn_idx, box, lbl in (
+                (0, self.modal_save_box, self.lbl_modal_save),
+                (1, self.modal_cancel_box, self.lbl_modal_cancel),
+            ):
+                bx, by, bw, bh = box
+                hov = self.modal_hover_btn == btn_idx
+                fill = (42, 62, 50, 245) if btn_idx == 0 else (58, 32, 36, 245)
+                arcade.draw_rect_filled(arcade.XYWH(bx, by, bw, bh), fill if hov else (24, 30, 48, 235))
+                arcade.draw_rect_outline(arcade.XYWH(bx, by, bw, bh), COLOR_GOLD if hov else (95, 115, 150, 220), border_width=2.5 if hov else 2)
+                lbl.color = COLOR_GOLD if hov else COLOR_TEXT
+                lbl.draw()
 
             self.modal_title.text = f"SAVE PLAYER {self.naming_player} CONTROL PRESET"
             cursor = "|" if int(self.cursor_timer * 2.4) % 2 == 0 else " "
@@ -480,7 +585,6 @@ class SettingsView(arcade.View):
             self.modal_title.draw()
             self.modal_sub.draw()
             self.modal_input_lbl.draw()
-            self.modal_hint.draw()
 
     def on_text(self, text: str):
         if self.naming_player is None:
@@ -494,10 +598,10 @@ class SettingsView(arcade.View):
                     self.naming_text += ch
 
     def on_key_press(self, key: int, modifiers: int):
-        # 1. Modal preset-name typing mode
         if self.naming_player is not None:
             if key == arcade.key.ESCAPE:
                 self.naming_player = None
+                self.modal_hover_btn = None
                 self.status_lbl.text = "Save preset cancelled."
             elif key in (arcade.key.ENTER, arcade.key.RETURN):
                 self._confirm_save_modal()
@@ -506,7 +610,6 @@ class SettingsView(arcade.View):
                 self.naming_text = self.naming_text[:-1]
             return
 
-        # 2. Keybind listening mode
         if self.listening:
             self.listening = False
             if key == arcade.key.ESCAPE:
@@ -520,7 +623,6 @@ class SettingsView(arcade.View):
             self._refresh_labels()
             return
 
-        # 3. Standard Settings navigation
         if key == arcade.key.ESCAPE:
             self._go_back()
             return
@@ -533,10 +635,12 @@ class SettingsView(arcade.View):
             self.selected_row = (self.selected_row + 1) % total_rows
             self._refresh_labels()
         elif key == arcade.key.LEFT:
-            if self.selected_row == 0:
+            if self.selected_row == self.row_mode:
                 self._cycle_display_mode(-1)
-            elif self.selected_row == 1:
+            elif self.selected_row == self.row_res:
                 self._cycle_resolution(-1)
+            elif self.selected_row == self.row_bloom:
+                self._toggle_bloom()
             elif self.selected_row == self.row_preset_select:
                 self._cycle_player_preset(1 if self.selected_col == 0 else 2, -1)
             elif self.selected_row == self.row_preset_actions:
@@ -553,10 +657,12 @@ class SettingsView(arcade.View):
                 self.selected_col = 0
                 self._refresh_labels()
         elif key == arcade.key.RIGHT:
-            if self.selected_row == 0:
+            if self.selected_row == self.row_mode:
                 self._cycle_display_mode(1)
-            elif self.selected_row == 1:
+            elif self.selected_row == self.row_res:
                 self._cycle_resolution(1)
+            elif self.selected_row == self.row_bloom:
+                self._toggle_bloom()
             elif self.selected_row == self.row_preset_select:
                 self._cycle_player_preset(1 if self.selected_col == 0 else 2, 1)
             elif self.selected_row == self.row_preset_actions:
@@ -574,10 +680,12 @@ class SettingsView(arcade.View):
                 self._refresh_labels()
         elif key in (arcade.key.ENTER, arcade.key.SPACE):
             p_num = 1 if self.selected_col == 0 else 2
-            if self.selected_row == 0:
+            if self.selected_row == self.row_mode:
                 self._cycle_display_mode(1)
-            elif self.selected_row == 1:
+            elif self.selected_row == self.row_res:
                 self._cycle_resolution(1)
+            elif self.selected_row == self.row_bloom:
+                self._toggle_bloom()
             elif self.selected_row == self.row_preset_select:
                 self._cycle_player_preset(p_num, 1)
             elif self.selected_row == self.row_preset_actions:
@@ -592,46 +700,130 @@ class SettingsView(arcade.View):
                 self._refresh_labels()
             elif self.selected_row == self.row_reset:
                 SETTINGS.reset_defaults()
+                SETTINGS.bloom_enabled = True
+                SETTINGS.save()
                 SETTINGS.apply_display(self.window)
-                self.status_lbl.text = "Display and active controls reset to defaults (saved presets kept)."
+                self.status_lbl.text = "Display, bloom, and active controls reset to defaults (saved presets kept)."
                 self._refresh_labels()
             elif self.selected_row == self.row_back:
                 self._go_back()
 
-    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
-        if button != arcade.MOUSE_BUTTON_LEFT or self.listening or self.naming_player is not None:
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
+        vx, vy = _to_virtual(self.window, x, y)
+
+        if self.naming_player is not None:
+            if _in_box(vx, vy, self.modal_save_box):
+                self.modal_hover_btn = 0
+            elif _in_box(vx, vy, self.modal_cancel_box):
+                self.modal_hover_btn = 1
+            else:
+                self.modal_hover_btn = None
             return
 
-        vx, vy = self.window.screen_to_virtual(x, y)
+        if self.listening:
+            return
 
-        # Display mode & resolution rows
-        if 200 <= vx <= 1720:
-            if 857 <= vy <= 895:
-                self.selected_row = 0
-                self._cycle_display_mode(1)
+        prev_state = (self.selected_row, self.selected_col, self.preset_action_idx)
+
+        if _in_box(vx, vy, self.mode_row_box):
+            self.selected_row = self.row_mode
+        elif _in_box(vx, vy, self.res_row_box):
+            self.selected_row = self.row_res
+        elif _in_box(vx, vy, self.bloom_row_box):
+            self.selected_row = self.row_bloom
+        elif _in_box(vx, vy, self.p1_preset_row_box):
+            self.selected_row = self.row_preset_select
+            self.selected_col = 0
+        elif _in_box(vx, vy, self.p2_preset_row_box):
+            self.selected_row = self.row_preset_select
+            self.selected_col = 1
+        elif _in_box(vx, vy, self.p1_save_box):
+            self.selected_row = self.row_preset_actions
+            self.selected_col = 0
+            self.preset_action_idx = 0
+        elif _in_box(vx, vy, self.p1_del_box):
+            self.selected_row = self.row_preset_actions
+            self.selected_col = 0
+            self.preset_action_idx = 1
+        elif _in_box(vx, vy, self.p2_save_box):
+            self.selected_row = self.row_preset_actions
+            self.selected_col = 1
+            self.preset_action_idx = 0
+        elif _in_box(vx, vy, self.p2_del_box):
+            self.selected_row = self.row_preset_actions
+            self.selected_col = 1
+            self.preset_action_idx = 1
+        elif _in_box(vx, vy, self.reset_btn_box):
+            self.selected_row = self.row_reset
+        elif _in_box(vx, vy, self.back_btn_box):
+            self.selected_row = self.row_back
+        else:
+            for i in range(self.num_actions):
+                ay = self.action_start_y - i * self.action_step_y + 6.0
+                if (ay - 18.0) <= vy <= (ay + 18.0):
+                    for col_idx, box in enumerate((self.p1_box, self.p2_box)):
+                        if (box[0] - box[2] * 0.5) <= vx <= (box[0] + box[2] * 0.5):
+                            self.selected_row = self.row_actions_start + i
+                            self.selected_col = col_idx
+                            break
+                    break
+
+        if (self.selected_row, self.selected_col, self.preset_action_idx) != prev_state:
+            self._refresh_labels()
+
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
+        vx, vy = _to_virtual(self.window, x, y)
+
+        if self.naming_player is not None:
+            if button != arcade.MOUSE_BUTTON_LEFT:
                 return
-            if 811 <= vy <= 849:
-                self.selected_row = 1
-                self._cycle_resolution(1)
+            if _in_box(vx, vy, self.modal_save_box):
+                self._confirm_save_modal()
+            elif _in_box(vx, vy, self.modal_cancel_box) or not _in_box(vx, vy, self.modal_box):
+                self.naming_player = None
+                self.modal_hover_btn = None
+                self.status_lbl.text = "Save preset cancelled."
+            return
+
+        if self.listening:
+            self.listening = False
+            self.status_lbl.text = "Rebind cancelled."
+            self._refresh_labels()
+            return
+
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        if _in_box(vx, vy, self.mode_row_box):
+            self.selected_row = self.row_mode
+            step = -1 if (1360.0 <= vx <= 1525.0) else 1
+            self._cycle_display_mode(step)
+            return
+
+        if _in_box(vx, vy, self.res_row_box):
+            self.selected_row = self.row_res
+            step = -1 if (1450.0 <= vx <= 1570.0) else 1
+            self._cycle_resolution(step)
+            return
+
+        if _in_box(vx, vy, self.bloom_row_box):
+            self.selected_row = self.row_bloom
+            self._toggle_bloom()
+            return
+
+        for col_idx, p_box in enumerate((self.p1_preset_row_box, self.p2_preset_row_box)):
+            if _in_box(vx, vy, p_box):
+                self.selected_row = self.row_preset_select
+                self.selected_col = col_idx
+                step = -1 if vx < (p_box[0] + 150.0) else 1
+                self._cycle_player_preset(col_idx + 1, step)
                 return
 
-        # Preset selector row (click left half for prev, right half for next)
-        if (self.preset_select_y - 14.0) <= vy <= (self.preset_select_y + 24.0):
-            for col_idx, box in enumerate((self.p1_box, self.p2_box)):
-                if (box[0] - box[2] * 0.5) <= vx <= (box[0] + box[2] * 0.5):
-                    self.selected_row = self.row_preset_select
-                    self.selected_col = col_idx
-                    step = -1 if vx < (box[0] + 150.0) else 1
-                    self._cycle_player_preset(col_idx + 1, step)
-                    return
-
-        # Preset Save / Delete buttons
         for col_idx, (save_box, del_box) in enumerate((
             (self.p1_save_box, self.p1_del_box),
             (self.p2_save_box, self.p2_del_box),
         )):
-            sx, sy, sw, sh = save_box
-            if (sx - sw * 0.5) <= vx <= (sx + sw * 0.5) and (sy - sh * 0.5) <= vy <= (sy + sh * 0.5):
+            if _in_box(vx, vy, save_box):
                 self.selected_row = self.row_preset_actions
                 self.selected_col = col_idx
                 self.preset_action_idx = 0
@@ -639,18 +831,16 @@ class SettingsView(arcade.View):
                 self._open_save_modal(col_idx + 1)
                 return
 
-            dx, dy, dw, dh = del_box
-            if (dx - dw * 0.5) <= vx <= (dx + dw * 0.5) and (dy - dh * 0.5) <= vy <= (dy + dh * 0.5):
+            if _in_box(vx, vy, del_box):
                 self.selected_row = self.row_preset_actions
                 self.selected_col = col_idx
                 self.preset_action_idx = 1
                 self._delete_active_preset(col_idx + 1)
                 return
 
-        # Control keybind rows
         for i in range(self.num_actions):
             ay = self.action_start_y - i * self.action_step_y + 6.0
-            if (ay - 19.0) <= vy <= (ay + 19.0):
+            if (ay - 18.0) <= vy <= (ay + 18.0):
                 for col_idx, box in enumerate((self.p1_box, self.p2_box)):
                     if (box[0] - box[2] * 0.5) <= vx <= (box[0] + box[2] * 0.5):
                         self.selected_row = self.row_actions_start + i
@@ -660,24 +850,23 @@ class SettingsView(arcade.View):
                         self._refresh_labels()
                         return
 
-        # Bottom buttons
-        rx, ry, rw, rh = self.reset_btn_box
-        if (rx - rw * 0.5) <= vx <= (rx + rw * 0.5) and (ry - rh * 0.5) <= vy <= (ry + rh * 0.5):
+        if _in_box(vx, vy, self.reset_btn_box):
             self.selected_row = self.row_reset
             SETTINGS.reset_defaults()
+            SETTINGS.bloom_enabled = True
+            SETTINGS.save()
             SETTINGS.apply_display(self.window)
-            self.status_lbl.text = "Display and active controls reset to defaults (saved presets kept)."
+            self.status_lbl.text = "Display, bloom, and active controls reset to defaults (saved presets kept)."
             self._refresh_labels()
             return
 
-        bx, by, bw, bh = self.back_btn_box
-        if (bx - bw * 0.5) <= vx <= (bx + bw * 0.5) and (by - bh * 0.5) <= vy <= (by + bh * 0.5):
+        if _in_box(vx, vy, self.back_btn_box):
             self.selected_row = self.row_back
             self._go_back()
 
 
 class CharacterSelectView(arcade.View):
-    """2-Player Smash-style character selection screen with animated previews and live preset switching."""
+    """2-Player Smash-style character selection screen with full mouse and keyboard support."""
 
     def __init__(self, p1_index: int = 0, p2_index: int = 1):
         super().__init__()
@@ -690,6 +879,15 @@ class CharacterSelectView(arcade.View):
         self.p1_ready = False
         self.p2_ready = False
         self.launch_countdown = -1.0
+
+        self.hovered_card: int | None = None
+        self.hovered_element: str | None = None
+
+        self.back_btn_box = (135.0, WINDOW_HEIGHT - 62.0, 200.0, 44.0)
+        self.lbl_back_btn = arcade.Text(
+            "< MAIN MENU", self.back_btn_box[0], self.back_btn_box[1], COLOR_TEXT,
+            font_size=16, anchor_x="center", anchor_y="center", bold=True,
+        )
 
         self.header = arcade.Text(
             "CHOOSE YOUR FIGHTER", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT - 95, COLOR_GOLD,
@@ -739,6 +937,13 @@ class CharacterSelectView(arcade.View):
         self.p1_panel = (WINDOW_WIDTH * 0.28, panel_y, panel_w, panel_h)
         self.p2_panel = (WINDOW_WIDTH * 0.72, panel_y, panel_w, panel_h)
 
+        self.p1_ready_box = (self.p1_panel[0] + panel_w * 0.5 - 125.0, panel_y + panel_h * 0.5 - 28.0, 196.0, 34.0)
+        self.p2_ready_box = (self.p2_panel[0] + panel_w * 0.5 - 125.0, panel_y + panel_h * 0.5 - 28.0, 196.0, 34.0)
+        self.p1_preset_box = (self.p1_panel[0], panel_y - panel_h * 0.5 + 53.0, panel_w - 48.0, 28.0)
+        self.p2_preset_box = (self.p2_panel[0], panel_y - panel_h * 0.5 + 53.0, panel_w - 48.0, 28.0)
+        self.p1_ped_box = (self.p1_panel[0] - panel_w * 0.5 + 95.0, panel_y + 6.0, 132.0, 156.0)
+        self.p2_ped_box = (self.p2_panel[0] - panel_w * 0.5 + 95.0, panel_y + 6.0, 132.0, 156.0)
+
         self.p1_preview = arcade.SpriteList()
         self.p2_preview = arcade.SpriteList()
         self.p1_sp = arcade.Sprite(self.roster_anims[self.p1_idx][0])
@@ -746,30 +951,30 @@ class CharacterSelectView(arcade.View):
         self.p1_preview.append(self.p1_sp)
         self.p2_preview.append(self.p2_sp)
 
-        self.p1_texts = self._create_panel_texts(self.p1_panel, "PLAYER 1", COLOR_HUD_P1)
-        self.p2_texts = self._create_panel_texts(self.p2_panel, "PLAYER 2", COLOR_HUD_P2)
+        self.p1_texts = self._create_panel_texts(self.p1_panel, self.p1_ready_box, "PLAYER 1", COLOR_HUD_P1)
+        self.p2_texts = self._create_panel_texts(self.p2_panel, self.p2_ready_box, "PLAYER 2", COLOR_HUD_P2)
         self._refresh_panel_control_hints()
 
         self.p1_badge_lbl = arcade.Text("P1", 0, 0, (255, 255, 255, 255), 13, anchor_x="center", anchor_y="center", bold=True)
         self.p2_badge_lbl = arcade.Text("P2", 0, 0, (15, 20, 30, 255), 13, anchor_x="center", anchor_y="center", bold=True)
 
+        self.ready_btn_box = (WINDOW_WIDTH * 0.5, 455.0, 560.0, 48.0)
         self.ready_banner = arcade.Text(
-            "PRESS ENTER OR SPACE TO START BATTLE!",
-            WINDOW_WIDTH * 0.5, 455, COLOR_GOLD, font_size=26, anchor_x="center", bold=True,
+            "CLICK HERE OR PRESS ENTER TO START BATTLE!",
+            WINDOW_WIDTH * 0.5, 455.0, COLOR_GOLD, font_size=22, anchor_x="center", anchor_y="center", bold=True,
         )
         self.footer = arcade.Text(
-            "ESC: Back to Main Menu   |   Press Heavy (or click Preset bar) to switch saved control presets",
-            WINDOW_WIDTH * 0.5, 42, COLOR_TEXT_DIM, font_size=17, anchor_x="center",
+            "Left-Click Card: P1  |  Right-Click Card: P2  |  Click LOCK IN to ready up  |  Click Preset bar to switch controls",
+            WINDOW_WIDTH * 0.5, 42, COLOR_TEXT_DIM, font_size=16, anchor_x="center",
         )
 
-    def _create_panel_texts(self, box: tuple, player_label: str, accent: tuple) -> dict:
+    def _create_panel_texts(self, box: tuple, ready_box: tuple, player_label: str, accent: tuple) -> dict:
         cx, cy, w, h = box
         left = cx - w * 0.5 + 28.0
-        right = cx + w * 0.5 - 28.0
         top = cy + h * 0.5 - 32.0
         return {
             "header": arcade.Text(player_label, left, top, accent, 20, bold=True),
-            "status": arcade.Text("SELECTING...", right, top, COLOR_TEXT_DIM, 16, anchor_x="right", bold=True),
+            "status": arcade.Text("LOCK IN", ready_box[0], ready_box[1], COLOR_TEXT, 14, anchor_x="center", anchor_y="center", bold=True),
             "char": arcade.Text("", left + 155.0, top - 40.0, COLOR_TEXT, 28, bold=True),
             "title": arcade.Text("", left + 155.0, top - 66.0, COLOR_GOLD, 15),
             "desc": arcade.Text("", left + 155.0, top - 104.0, COLOR_TEXT_DIM, 13, multiline=True, width=int(w - 210)),
@@ -807,7 +1012,7 @@ class CharacterSelectView(arcade.View):
 
         if self.p1_ready and self.p2_ready:
             if self.launch_countdown < 0:
-                self.launch_countdown = 0.55
+                self.launch_countdown = 0.85
             else:
                 self.launch_countdown -= dt
                 if self.launch_countdown <= 0:
@@ -822,16 +1027,27 @@ class CharacterSelectView(arcade.View):
 
     def on_draw(self):
         self.clear()
-        self.window.default_camera.use()
-        self.stage.draw_backdrop()
-        self.stage.draw_foreground()
+        _draw_stage_with_optional_bloom(self.window, self.stage)
+
+        # Top-left Back button
+        bx, by, bw, bh = self.back_btn_box
+        back_hov = self.hovered_element == "back"
+        arcade.draw_rect_filled(arcade.XYWH(bx, by, bw, bh), (42, 48, 76, 235) if back_hov else COLOR_HUD_BG)
+        arcade.draw_rect_outline(arcade.XYWH(bx, by, bw, bh), COLOR_GOLD if back_hov else (95, 115, 155, 220), border_width=2.5 if back_hov else 2)
+        self.lbl_back_btn.color = COLOR_GOLD if back_hov else COLOR_TEXT
+        self.lbl_back_btn.draw()
 
         self.header.draw()
         self.sub_header.draw()
 
         for i, (cx, cy, cw, ch) in enumerate(self.card_boxes):
-            arcade.draw_rect_filled(arcade.XYWH(cx, cy, cw, ch), COLOR_HUD_BG)
-            arcade.draw_rect_outline(arcade.XYWH(cx, cy, cw, ch), (75, 90, 120, 255), border_width=2)
+            is_hov = self.hovered_card == i
+            arcade.draw_rect_filled(arcade.XYWH(cx, cy, cw, ch), (28, 34, 58, 235) if is_hov else COLOR_HUD_BG)
+            arcade.draw_rect_outline(
+                arcade.XYWH(cx, cy, cw, ch),
+                (200, 215, 245, 255) if is_hov else (75, 90, 120, 255),
+                border_width=3 if is_hov else 2,
+            )
 
             p1_on = i == self.p1_idx
             p2_on = i == self.p2_idx
@@ -844,15 +1060,15 @@ class CharacterSelectView(arcade.View):
                 arcade.draw_rect_outline(arcade.XYWH(cx, cy, cw + 8, ch + 8), COLOR_HUD_P2, border_width=4)
 
             if p1_on:
-                bx = cx - (34 if p2_on else 0)
-                arcade.draw_rect_filled(arcade.XYWH(bx, cy + ch * 0.5 + 16, 56, 24), COLOR_HUD_P1)
-                self.p1_badge_lbl.x = bx
+                tag_x = cx - (34 if p2_on else 0)
+                arcade.draw_rect_filled(arcade.XYWH(tag_x, cy + ch * 0.5 + 16, 56, 24), COLOR_HUD_P1)
+                self.p1_badge_lbl.x = tag_x
                 self.p1_badge_lbl.y = cy + ch * 0.5 + 16
                 self.p1_badge_lbl.draw()
             if p2_on:
-                bx = cx + (34 if p1_on else 0)
-                arcade.draw_rect_filled(arcade.XYWH(bx, cy + ch * 0.5 + 16, 56, 24), COLOR_HUD_P2)
-                self.p2_badge_lbl.x = bx
+                tag_x = cx + (34 if p1_on else 0)
+                arcade.draw_rect_filled(arcade.XYWH(tag_x, cy + ch * 0.5 + 16, 56, 24), COLOR_HUD_P2)
+                self.p2_badge_lbl.x = tag_x
                 self.p2_badge_lbl.y = cy + ch * 0.5 + 16
                 self.p2_badge_lbl.draw()
 
@@ -866,35 +1082,52 @@ class CharacterSelectView(arcade.View):
 
         is_mirror = self.p1_idx == self.p2_idx
         self._draw_player_panel(
-            self.p1_panel, self.roster[self.p1_idx], self.p1_ready,
+            self.p1_panel, self.p1_ready_box, self.p1_preset_box, self.p1_ped_box,
+            self.roster[self.p1_idx], self.p1_ready,
             COLOR_HUD_P1, self.p1_texts, self.p1_sp, self.p1_preview,
-            facing="RIGHT", tint_preview=is_mirror,
+            facing="RIGHT", tint_preview=is_mirror, player_num=1,
         )
         self._draw_player_panel(
-            self.p2_panel, self.roster[self.p2_idx], self.p2_ready,
+            self.p2_panel, self.p2_ready_box, self.p2_preset_box, self.p2_ped_box,
+            self.roster[self.p2_idx], self.p2_ready,
             COLOR_HUD_P2, self.p2_texts, self.p2_sp, self.p2_preview,
-            facing="LEFT", tint_preview=is_mirror,
+            facing="LEFT", tint_preview=is_mirror, player_num=2,
         )
 
         if self.p1_ready and self.p2_ready:
+            rx, ry, rw, rh = self.ready_btn_box
+            start_hov = self.hovered_element == "start"
+            arcade.draw_rect_filled(arcade.XYWH(rx, ry, rw, rh), (55, 68, 45, 245) if start_hov else (32, 42, 34, 235))
+            arcade.draw_rect_outline(arcade.XYWH(rx, ry, rw, rh), COLOR_GOLD, border_width=3.5 if start_hov else 2.5)
             self.ready_banner.draw()
 
         self.footer.draw()
 
-    def _draw_player_panel(self, box, spec, is_ready, accent, texts, sp, sp_list, facing: str, tint_preview: bool = False):
+    def _draw_player_panel(
+        self, box, ready_box, preset_box, ped_box,
+        spec, is_ready, accent, texts, sp, sp_list,
+        facing: str, tint_preview: bool = False, player_num: int = 1,
+    ):
         cx, cy, w, h = box
         arcade.draw_rect_filled(arcade.XYWH(cx, cy, w, h), COLOR_HUD_BG)
         arcade.draw_rect_outline(arcade.XYWH(cx, cy, w, h), COLOR_GOLD if is_ready else accent, border_width=4)
 
-        ped_x = cx - w * 0.5 + 95.0
-        ped_y = cy + 6.0
-        arcade.draw_rect_filled(arcade.XYWH(ped_x, ped_y, 132, 156), (22, 27, 46, 220))
-        arcade.draw_rect_outline(arcade.XYWH(ped_x, ped_y, 132, 156), accent, border_width=2)
+        ped_x, ped_y, ped_w, ped_h = ped_box
+        ped_hov = self.hovered_element == f"p{player_num}_ped"
+        arcade.draw_rect_filled(arcade.XYWH(ped_x, ped_y, ped_w, ped_h), (30, 38, 64, 235) if ped_hov else (22, 27, 46, 220))
+        arcade.draw_rect_outline(arcade.XYWH(ped_x, ped_y, ped_w, ped_h), COLOR_GOLD if ped_hov else accent, border_width=2)
 
-        # Preset pill bar
-        pill_y = cy - h * 0.5 + 53.0
-        arcade.draw_rect_filled(arcade.XYWH(cx, pill_y, w - 48.0, 26.0), (20, 26, 44, 220))
-        arcade.draw_rect_outline(arcade.XYWH(cx, pill_y, w - 48.0, 26.0), (95, 145, 195, 180), border_width=1.5)
+        rbx, rby, rbw, rbh = ready_box
+        ready_hov = self.hovered_element == f"p{player_num}_ready"
+        r_fill = (55, 68, 44, 240) if is_ready else ((42, 50, 78, 240) if ready_hov else (24, 30, 48, 230))
+        r_rim = COLOR_GOLD if (is_ready or ready_hov) else accent
+        arcade.draw_rect_filled(arcade.XYWH(rbx, rby, rbw, rbh), r_fill)
+        arcade.draw_rect_outline(arcade.XYWH(rbx, rby, rbw, rbh), r_rim, border_width=2.5 if ready_hov else 2)
+
+        px, py, pw, ph = preset_box
+        preset_hov = self.hovered_element == f"p{player_num}_preset"
+        arcade.draw_rect_filled(arcade.XYWH(px, py, pw, ph), (32, 42, 68, 235) if preset_hov else (20, 26, 44, 220))
+        arcade.draw_rect_outline(arcade.XYWH(px, py, pw, ph), COLOR_GOLD if preset_hov else (95, 145, 195, 180), border_width=2 if preset_hov else 1.5)
 
         frames = get_fighter_animations(spec.char_id)[facing]["IDLE"]
         tex = frames[self.anim_frame % len(frames)]
@@ -908,8 +1141,8 @@ class CharacterSelectView(arcade.View):
         except TypeError:
             sp_list.draw()
 
-        texts["status"].text = "READY!" if is_ready else "SELECTING..."
-        texts["status"].color = COLOR_GOLD if is_ready else COLOR_TEXT_DIM
+        texts["status"].text = "READY! (UNDO)" if is_ready else "LOCK IN"
+        texts["status"].color = COLOR_GOLD if (is_ready or ready_hov) else COLOR_TEXT
         texts["char"].text = spec.display_name
         texts["title"].text = f"{spec.title}  •  {spec.weapon_name}"
         texts["desc"].text = spec.summary
@@ -970,21 +1203,84 @@ class CharacterSelectView(arcade.View):
             elif not self.p2_ready:
                 self.p2_ready = True
 
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
+        vx, vy = _to_virtual(self.window, x, y)
+
+        self.hovered_card = None
+        for i, box in enumerate(self.card_boxes):
+            if _in_box(vx, vy, box):
+                self.hovered_card = i
+                break
+
+        self.hovered_element = None
+        if _in_box(vx, vy, self.back_btn_box):
+            self.hovered_element = "back"
+        elif self.p1_ready and self.p2_ready and _in_box(vx, vy, self.ready_btn_box):
+            self.hovered_element = "start"
+        elif _in_box(vx, vy, self.p1_ready_box):
+            self.hovered_element = "p1_ready"
+        elif _in_box(vx, vy, self.p2_ready_box):
+            self.hovered_element = "p2_ready"
+        elif _in_box(vx, vy, self.p1_preset_box):
+            self.hovered_element = "p1_preset"
+        elif _in_box(vx, vy, self.p2_preset_box):
+            self.hovered_element = "p2_preset"
+        elif _in_box(vx, vy, self.p1_ped_box):
+            self.hovered_element = "p1_ped"
+        elif _in_box(vx, vy, self.p2_ped_box):
+            self.hovered_element = "p2_ped"
+
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
+        vx, vy = _to_virtual(self.window, x, y)
+
+        if button == arcade.MOUSE_BUTTON_RIGHT:
+            for i, box in enumerate(self.card_boxes):
+                if _in_box(vx, vy, box) and not self.p2_ready:
+                    self.p2_idx = i
+                    return
+            return
+
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
-        vx, vy = self.window.screen_to_virtual(x, y)
 
-        for p_num, box, is_ready in (
-            (1, self.p1_panel, self.p1_ready),
-            (2, self.p2_panel, self.p2_ready),
+        if _in_box(vx, vy, self.back_btn_box):
+            self.window.show_view(TitleView())
+            return
+
+        if self.p1_ready and self.p2_ready and _in_box(vx, vy, self.ready_btn_box):
+            self._start_match()
+            return
+
+        for i, box in enumerate(self.card_boxes):
+            if _in_box(vx, vy, box):
+                if not self.p1_ready:
+                    self.p1_idx = i
+                elif not self.p2_ready:
+                    self.p2_idx = i
+                return
+
+        if _in_box(vx, vy, self.p1_ready_box):
+            self.p1_ready = not self.p1_ready
+            return
+
+        if _in_box(vx, vy, self.p2_ready_box):
+            self.p2_ready = not self.p2_ready
+            return
+
+        if _in_box(vx, vy, self.p1_ped_box) and not self.p1_ready:
+            self.p1_idx = (self.p1_idx + 1) % self.count
+            return
+
+        if _in_box(vx, vy, self.p2_ped_box) and not self.p2_ready:
+            self.p2_idx = (self.p2_idx + 1) % self.count
+            return
+
+        for p_num, p_box, is_ready in (
+            (1, self.p1_preset_box, self.p1_ready),
+            (2, self.p2_preset_box, self.p2_ready),
         ):
-            if is_ready:
-                continue
-            cx, cy, w, h = box
-            pill_y = cy - h * 0.5 + 53.0
-            if (cx - w * 0.5 + 24.0) <= vx <= (cx + w * 0.5 - 24.0) and (pill_y - 14.0) <= vy <= (pill_y + 14.0):
-                step = -1 if vx < cx else 1
+            if not is_ready and _in_box(vx, vy, p_box):
+                step = -1 if vx < p_box[0] else 1
                 SETTINGS.cycle_preset(p_num, step)
                 self._refresh_panel_control_hints()
                 return
@@ -996,6 +1292,7 @@ class ControlsView(arcade.View):
         self.stage = HolidayStage(include_platforms=False, snow_count=90)
         c1 = SETTINGS.p1_controls
         c2 = SETTINGS.p2_controls
+        self.back_hovered = False
 
         self.header = arcade.Text(
             "CONTROLS & MECHANICS", WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.83, COLOR_GOLD,
@@ -1025,16 +1322,23 @@ class ControlsView(arcade.View):
             f"Shield / Tech: {key_name(c2['shield'])}  |  Ledge Grab: Touch Stage Corner",
             WINDOW_WIDTH * 0.70 - 340, WINDOW_HEIGHT * 0.56, COLOR_TEXT, 16, multiline=True, width=680,
         )
-        self.footer = arcade.Text("Press ESC or ENTER to return  |  Create & load control presets in SETTINGS  |  F1 in-game toggles Hitboxes", WINDOW_WIDTH * 0.5, 55, COLOR_TEXT_DIM, 19, anchor_x="center")
+
+        self.back_btn_box = (WINDOW_WIDTH * 0.5, 130.0, 320.0, 50.0)
+        self.lbl_back = arcade.Text(
+            "< BACK TO MENU", self.back_btn_box[0], self.back_btn_box[1], COLOR_TEXT,
+            font_size=20, anchor_x="center", anchor_y="center", bold=True,
+        )
+        self.footer = arcade.Text(
+            "Create & load control presets in SETTINGS  |  F1 in-game toggles Hitboxes",
+            WINDOW_WIDTH * 0.5, 50, COLOR_TEXT_DIM, 17, anchor_x="center",
+        )
 
     def on_update(self, delta_time: float):
         self.stage.update(min(delta_time, MAX_FRAME_TIME))
 
     def on_draw(self):
         self.clear()
-        self.window.default_camera.use()
-        self.stage.draw_backdrop()
-        self.stage.draw_foreground()
+        _draw_stage_with_optional_bloom(self.window, self.stage)
         self.header.draw()
 
         for cx, accent in ((WINDOW_WIDTH * 0.30, COLOR_HUD_P1), (WINDOW_WIDTH * 0.70, COLOR_HUD_P2)):
@@ -1045,10 +1349,28 @@ class ControlsView(arcade.View):
         self.p1_body.draw()
         self.p2_head.draw()
         self.p2_body.draw()
+
+        bx, by, bw, bh = self.back_btn_box
+        arcade.draw_rect_filled(arcade.XYWH(bx, by, bw, bh), (42, 48, 76, 235) if self.back_hovered else COLOR_HUD_BG)
+        arcade.draw_rect_outline(arcade.XYWH(bx, by, bw, bh), COLOR_GOLD if self.back_hovered else (95, 115, 155, 220), border_width=3 if self.back_hovered else 2)
+        self.lbl_back.color = COLOR_GOLD if self.back_hovered else COLOR_TEXT
+        self.lbl_back.draw()
+
         self.footer.draw()
 
     def on_key_press(self, key: int, modifiers: int):
         if key in (arcade.key.ESCAPE, arcade.key.ENTER, arcade.key.SPACE):
+            self.window.show_view(TitleView())
+
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
+        vx, vy = _to_virtual(self.window, x, y)
+        self.back_hovered = _in_box(vx, vy, self.back_btn_box)
+
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+        vx, vy = _to_virtual(self.window, x, y)
+        if _in_box(vx, vy, self.back_btn_box):
             self.window.show_view(TitleView())
 
 
@@ -1064,17 +1386,37 @@ class FightView(arcade.View):
         self.p2_tag = arcade.Text("P2", 0, 0, COLOR_HUD_P2, 13, anchor_x="center", bold=True)
         self.setup()
 
-    def _sync_camera_viewports(self):
+    def _sync_camera_viewports(self, virtual_capture: bool = False):
         if self.window is None:
             return
-        vp = getattr(self.window, "viewport_rect", arcade.LBWH(0, 0, self.window.width, self.window.height))
-        self.gui_camera.viewport = vp
-        self.gui_camera.projection = arcade.LRBT(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
-        self.world_camera.viewport = vp
-        self.world_camera.projection = arcade.LRBT(
+        if virtual_capture:
+            vp = arcade.LBWH(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
+        else:
+            vp = getattr(self.window, "viewport_rect", arcade.LBWH(0, 0, self.window.width, self.window.height))
+        proj = arcade.LRBT(
             -WINDOW_WIDTH * 0.5, WINDOW_WIDTH * 0.5,
             -WINDOW_HEIGHT * 0.5, WINDOW_HEIGHT * 0.5,
         )
+
+        self.gui_camera.viewport = vp
+        self.gui_camera.projection = proj
+        self.gui_camera.position = (WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5)
+
+        self.world_camera.viewport = vp
+        self.world_camera.projection = proj
+
+    def _clear_fighter_inputs(self):
+        for f in (self.p1, self.p2):
+            f.move_left = False
+            f.move_right = False
+            f.up_held = False
+            f.crouching = False
+            f.jump_pressed = False
+            f.jump_held = False
+            f.attack_pressed = False
+            f.charge_pressed = False
+            f.charge_held = False
+            f.shield_held = False
 
     def on_show_view(self):
         self._sync_camera_viewports()
@@ -1086,6 +1428,7 @@ class FightView(arcade.View):
     def setup(self):
         self._sync_camera_viewports()
         self.hud.refresh_control_labels()
+        self.hud.hovered_action = None
         self.stage = HolidayStage(include_platforms=True, snow_count=120)
         self.effects = EffectSystem()
 
@@ -1106,7 +1449,6 @@ class FightView(arcade.View):
         self.fighter_sprites.append(self.p1)
         self.fighter_sprites.append(self.p2)
 
-        # Pre-upload VFX textures to the GPU atlas during setup
         for f in (self.p1, self.p2):
             for dir_dict in f.vfx.values():
                 for frames in dir_dict.values():
@@ -1141,10 +1483,26 @@ class FightView(arcade.View):
         i2 = ids.index(self.p2_char_id) if self.p2_char_id in ids else 1
         self.window.show_view(CharacterSelectView(p1_index=i1, p2_index=i2))
 
+    def _execute_overlay_action(self, action: str):
+        if action == "resume":
+            self.is_paused = False
+            self.hud.hovered_action = None
+        elif action == "settings":
+            self.window.show_view(SettingsView(return_view=self))
+        elif action == "restart":
+            self.setup()
+        elif action == "char_select":
+            self._open_char_select()
+        elif action == "hitboxes":
+            config.DEBUG_HITBOXES = not config.DEBUG_HITBOXES
+        elif action == "main_menu":
+            self.window.show_view(TitleView())
+
     def _update_active_camera(self, dt: float):
         def _tracked_point(f: Fighter) -> tuple[float, float]:
-            tx = max(-240.0, min(WINDOW_WIDTH + 240.0, f.hurt_center_x + f.change_x * 4.5))
-            ty = max(-80.0, min(WINDOW_HEIGHT + 280.0, f.hurt_center_y + f.change_y * 3.0))
+            # Clamp tracked target to the play-area edges so off-stage launches stop pulling the camera
+            tx = max(PLAY_AREA_MIN_X, min(PLAY_AREA_MAX_X, f.hurt_center_x + f.change_x * 3.5))
+            ty = max(PLAY_AREA_MIN_Y, min(PLAY_AREA_MAX_Y, f.hurt_center_y + f.change_y * 2.5))
             return tx, ty
 
         active_fighters = [f for f in (self.p1, self.p2) if not f.is_ko_waiting]
@@ -1167,28 +1525,23 @@ class FightView(arcade.View):
             span_x = 1500.0
             span_y = 860.0
 
+        min_zoom = max(1.0, float(CAMERA_MIN_ZOOM))
         target_zoom = min(WINDOW_WIDTH / span_x, WINDOW_HEIGHT / span_y)
-        target_zoom = max(CAMERA_MIN_ZOOM, min(CAMERA_MAX_ZOOM, target_zoom))
+        target_zoom = max(min_zoom, min(CAMERA_MAX_ZOOM, target_zoom))
         if self.impact_freeze_timer > 0:
             target_zoom = min(CAMERA_MAX_ZOOM, target_zoom * 1.07)
 
         lerp_t = 1.0 - math.exp(-CAMERA_LERP_SPEED * dt)
-        self.cam_zoom += (target_zoom - self.cam_zoom) * lerp_t
+        self.cam_zoom = max(min_zoom, min(CAMERA_MAX_ZOOM, self.cam_zoom + (target_zoom - self.cam_zoom) * lerp_t))
         self.cam_x += (mid_x - self.cam_x) * lerp_t
         self.cam_y += (mid_y - self.cam_y) * lerp_t
 
         half_w = (WINDOW_WIDTH * 0.5) / self.cam_zoom
         half_h = (WINDOW_HEIGHT * 0.5) / self.cam_zoom
 
-        if half_w * 2.0 >= (WORLD_MAX_X - WORLD_MIN_X):
-            self.cam_x = WINDOW_WIDTH * 0.5
-        else:
-            self.cam_x = max(WORLD_MIN_X + half_w, min(WORLD_MAX_X - half_w, self.cam_x))
-
-        if half_h * 2.0 >= (WORLD_MAX_Y - WORLD_MIN_Y):
-            self.cam_y = WINDOW_HEIGHT * 0.5
-        else:
-            self.cam_y = max(WORLD_MIN_Y + half_h, min(WORLD_MAX_Y - half_h, self.cam_y))
+        # Strictly keep camera viewport inside the [0, WINDOW_WIDTH] x [0, WINDOW_HEIGHT] play area
+        self.cam_x = max(PLAY_AREA_MIN_X + half_w, min(PLAY_AREA_MAX_X - half_w, self.cam_x))
+        self.cam_y = max(PLAY_AREA_MIN_Y + half_h, min(PLAY_AREA_MAX_Y - half_h, self.cam_y))
 
         sx, sy = 0.0, 0.0
         if self.screen_shake > 0:
@@ -1535,9 +1888,8 @@ class FightView(arcade.View):
                 arcade.draw_line(cx, cy, nx, ny, bolt_col, line_width=max(1.5, 5.0 - seg * 0.8))
                 cx, cy = nx, ny
 
-    def on_draw(self):
-        self.clear()
-        self._sync_camera_viewports()
+    def _draw_world_pass(self, cam_bounds: tuple[float, float, float, float]):
+        cam_left, cam_right, cam_bottom, cam_top = cam_bounds
 
         with self.gui_camera.activate():
             if self.impact_freeze_timer > 0:
@@ -1567,8 +1919,16 @@ class FightView(arcade.View):
                     arcade.draw_circle_filled(f.hurt_center_x, f.hurt_center_y, radius, COLOR_SHIELD)
                     arcade.draw_circle_outline(f.hurt_center_x, f.hurt_center_y, radius, COLOR_SHIELD_RIM, 3)
 
-            self.p1.visible = not self.p1.is_ko_waiting
-            self.p2.visible = not self.p2.is_ko_waiting
+            for f in (self.p1, self.p2):
+                in_view = (
+                    not f.is_ko_waiting
+                    and f.right >= cam_left
+                    and f.left <= cam_right
+                    and f.top >= cam_bottom
+                    and f.bottom <= cam_top
+                )
+                f.visible = in_view
+
             try:
                 self.fighter_sprites.draw(pixelated=True)
             except TypeError:
@@ -1576,7 +1936,7 @@ class FightView(arcade.View):
 
             self._draw_attack_vfx()
             self.effects.draw()
-            self._draw_player_tags()
+            self._draw_player_tags(cam_bounds)
 
             if config.DEBUG_HITBOXES:
                 for f in (self.p1, self.p2):
@@ -1590,6 +1950,22 @@ class FightView(arcade.View):
                         hx, hy, hw, hh = f.attack_hitbox
                         arcade.draw_rect_outline(arcade.XYWH(hx + hw * 0.5, hy + hh * 0.5, hw, hh), COLOR_HITBOX_DEBUG, 2)
 
+    def on_draw(self):
+        self.clear()
+        cam_bounds = self._get_camera_world_bounds()
+        bloom = get_bloom_renderer(self.window) if getattr(SETTINGS, "bloom_enabled", True) else None
+
+        if bloom and bloom.available:
+            self._sync_camera_viewports(virtual_capture=True)
+            with bloom.capture():
+                self._draw_world_pass(cam_bounds)
+            self._sync_camera_viewports(virtual_capture=False)
+            with self.gui_camera.activate():
+                bloom.render()
+        else:
+            self._sync_camera_viewports(virtual_capture=False)
+            self._draw_world_pass(cam_bounds)
+
         with self.gui_camera.activate():
             if self.ko_flash_timer > 0:
                 alpha = int(140 * (self.ko_flash_timer / 8.0))
@@ -1602,12 +1978,15 @@ class FightView(arcade.View):
                 self.p1, self.p2,
                 self.game_state, self.intro_timer, self.is_paused,
                 self.game_over_title, self.game_over_sub,
-                self.match_time, self._get_camera_world_bounds(),
+                self.match_time, cam_bounds,
             )
 
-    def _draw_player_tags(self):
+    def _draw_player_tags(self, cam_bounds: tuple[float, float, float, float]):
+        cam_left, cam_right, cam_bottom, cam_top = cam_bounds
         for f, tag in ((self.p1, self.p1_tag), (self.p2, self.p2_tag)):
             if f.is_ko_waiting:
+                continue
+            if f.right < cam_left or f.left > cam_right or f.bottom > cam_top or f.top < cam_bottom:
                 continue
             ty = max(f.top, f.hurt_top) + 16.0
             tag.x = f.hurt_center_x
@@ -1657,6 +2036,22 @@ class FightView(arcade.View):
 
             arcade.draw_texture_rect(tex, arcade.XYWH(vx, vy, w_spec.vfx_size, w_spec.vfx_size))
 
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
+        if self.is_paused or self.game_state == "OVER":
+            vx, vy = _to_virtual(self.window, x, y)
+            self.hud.hovered_action = self.hud.get_overlay_action_at(vx, vy, self.is_paused, self.game_state)
+        else:
+            self.hud.hovered_action = None
+
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+        if self.is_paused or self.game_state == "OVER":
+            vx, vy = _to_virtual(self.window, x, y)
+            action = self.hud.get_overlay_action_at(vx, vy, self.is_paused, self.game_state)
+            if action:
+                self._execute_overlay_action(action)
+
     def on_key_press(self, key: int, modifiers: int):
         if key == arcade.key.F1:
             config.DEBUG_HITBOXES = not config.DEBUG_HITBOXES
@@ -1664,17 +2059,20 @@ class FightView(arcade.View):
 
         if key == arcade.key.ESCAPE and self.game_state == "PLAYING":
             self.is_paused = not self.is_paused
+            self.hud.hovered_action = None
+            if self.is_paused:
+                self._clear_fighter_inputs()
             return
 
         if self.is_paused or self.game_state == "OVER":
             if self.is_paused and key == arcade.key.S:
-                self.window.show_view(SettingsView(return_view=self))
+                self._execute_overlay_action("settings")
             elif key == arcade.key.R:
-                self.setup()
+                self._execute_overlay_action("restart")
             elif key == arcade.key.C:
-                self._open_char_select()
+                self._execute_overlay_action("char_select")
             elif key == arcade.key.Q:
-                self.window.show_view(TitleView())
+                self._execute_overlay_action("main_menu")
             return
 
         c1 = SETTINGS.p1_controls
