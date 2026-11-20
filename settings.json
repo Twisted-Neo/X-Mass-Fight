@@ -1,0 +1,30 @@
+{
+  "display_mode": "borderless",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "p1_controls": {
+    "left": 97,
+    "right": 100,
+    "up": 119,
+    "down": 115,
+    "jump": 32,
+    "attack": 102,
+    "heavy": 103,
+    "shield": 101
+  },
+  "p2_controls": {
+    "left": 65361,
+    "right": 65363,
+    "up": 65362,
+    "down": 65364,
+    "jump": 65506,
+    "attack": 45,
+    "heavy": 46,
+    "shield": 44
+  },
+  "p1_preset": "Default P1",
+  "p2_preset": "Default P2",
+  "presets": {}
+}
